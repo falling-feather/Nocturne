@@ -11,9 +11,14 @@
 int main(int argc, char* argv[])
 {
     QApplication app(argc, argv);
+    const bool testProfile = app.arguments().contains(QStringLiteral("--test-profile"));
+    if (testProfile)
+        QStandardPaths::setTestModeEnabled(true);
     QApplication::setOrganizationName(QStringLiteral("FeatherNote"));
     QApplication::setOrganizationDomain(QStringLiteral("local.feathernote"));
-    QApplication::setApplicationName(QStringLiteral("FeatherNote"));
+    QApplication::setApplicationName(testProfile
+        ? QStringLiteral("FeatherNoteUiSmoke")
+        : QStringLiteral("FeatherNote"));
     QApplication::setApplicationVersion(QStringLiteral(FEATHERNOTE_VERSION));
     QApplication::setQuitOnLastWindowClosed(false);
 
@@ -23,7 +28,9 @@ int main(int argc, char* argv[])
 
     const QString lockDir = QStandardPaths::writableLocation(QStandardPaths::TempLocation);
     QDir().mkpath(lockDir);
-    QLockFile instanceLock(QDir(lockDir).filePath(QStringLiteral("FeatherNotePrototype.lock")));
+    QLockFile instanceLock(QDir(lockDir).filePath(testProfile
+        ? QStringLiteral("FeatherNoteUiSmoke.lock")
+        : QStringLiteral("FeatherNotePrototype.lock")));
     instanceLock.setStaleLockTime(0);
     if (!instanceLock.tryLock(100)) {
         QMessageBox::information(nullptr,
@@ -46,4 +53,3 @@ int main(int argc, char* argv[])
     window.show();
     return app.exec();
 }
-

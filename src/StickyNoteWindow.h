@@ -21,6 +21,10 @@ public:
 public slots:
     void summon();
     void flushSave();
+    void reloadFromDatabase();
+
+signals:
+    void noteSaved(qint64 noteId);
 
 protected:
     void closeEvent(QCloseEvent* event) override;
@@ -36,10 +40,10 @@ private:
     QTextEdit* editor_ = nullptr;
     QLabel* saveHint_ = nullptr;
     QTimer* saveTimer_ = nullptr;
+    qint64 noteId_ = 0;
     QString lastSavedText_;
     bool dirty_ = false;
     bool firstSummon_ = true;
     bool restoredGeometry_ = false;
     bool geometryPersistenceReady_ = false;
 };
-

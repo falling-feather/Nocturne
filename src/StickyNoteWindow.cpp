@@ -11,6 +11,7 @@
 #include <QResizeEvent>
 #include <QScreen>
 #include <QSettings>
+#include <QSignalBlocker>
 #include <QTextEdit>
 #include <QTimer>
 #include <QVBoxLayout>
@@ -95,15 +96,7 @@ StickyNoteWindow::StickyNoteWindow(Database* db, QWidget* parent)
     saveTimer_->setInterval(kSaveDelayMs);
     connect(saveTimer_, &QTimer::timeout, this, &StickyNoteWindow::flushSave);
 
-    QString loadError;
-    if (db_) {
-        lastSavedText_ = db_->quickNote(&loadError);
-        editor_->setPlainText(lastSavedText_);
-    }
-    if (!loadError.isEmpty()) {
-        saveHint_->setText(QStringLiteral("读取失败"));
-        saveHint_->setToolTip(loadError);
-    }
+    reloadFromDatabase();
 
     connect(editor_, &QTextEdit::textChanged, this, &StickyNoteWindow::markDirty);
 
@@ -145,16 +138,46 @@ void StickyNoteWindow::flushSave()
     }
 
     QString error;
-    if (db_->saveQuickNote(text, &error)) {
+    const qint64 savedId = db_->saveStickyNote(text, &error);
+    if (savedId >= 0) {
+        noteId_ = savedId;
         lastSavedText_ = text;
         dirty_ = false;
         saveHint_->setText(QStringLiteral("已自动保存"));
         saveHint_->setToolTip(QString());
+        if (savedId > 0)
+            emit noteSaved(savedId);
         return;
     }
 
     saveHint_->setText(QStringLiteral("保存失败"));
     saveHint_->setToolTip(error);
+}
+
+void StickyNoteWindow::reloadFromDatabase()
+{
+    if (dirty_) {
+        flushSave();
+        if (dirty_)
+            return;
+    }
+    saveTimer_->stop();
+
+    QString error;
+    const std::optional<NoteRecord> record = db_ ? db_->stickyNote(&error) : std::nullopt;
+    if (!error.isEmpty()) {
+        saveHint_->setText(QStringLiteral("读取失败"));
+        saveHint_->setToolTip(error);
+        return;
+    }
+
+    const QSignalBlocker blocker(editor_);
+    noteId_ = record.has_value() ? record->id : 0;
+    lastSavedText_ = record.has_value() ? record->plainText : QString();
+    editor_->setPlainText(lastSavedText_);
+    dirty_ = false;
+    saveHint_->setText(QStringLiteral("已自动保存"));
+    saveHint_->setToolTip(QString());
 }
 
 void StickyNoteWindow::closeEvent(QCloseEvent* event)
@@ -225,4 +248,3 @@ void StickyNoteWindow::markDirty()
     saveHint_->setToolTip(QString());
     saveTimer_->start();
 }
-

@@ -1,8 +1,10 @@
 #pragma once
 
+#include "Database.h"
+
+#include <QCache>
 #include <QMainWindow>
 
-class Database;
 class GlobalHotkey;
 class NoteEditor;
 class StickyNoteWindow;
@@ -10,11 +12,13 @@ class StickyNoteWindow;
 class QAction;
 class QCloseEvent;
 class QComboBox;
+class QImage;
 class QLabel;
 class QLineEdit;
 class QListWidget;
 class QListWidgetItem;
 class QMenu;
+class QPoint;
 class QPushButton;
 class QSystemTrayIcon;
 class QTimer;
@@ -45,9 +49,18 @@ private:
     bool saveCurrentNote(bool force = false);
     void scheduleSave();
     void createNote();
+    void renameCurrentNote();
     void deleteCurrentNote();
+    void showNoteContextMenu(const QPoint& position);
     void importDocument();
     void exportDocument();
+
+    void refreshFolders(qint64 preferredFilter = Database::AllFolders);
+    void createFolder();
+    void renameSelectedFolder();
+    void deleteSelectedFolder();
+    void moveCurrentNoteToSelectedFolder();
+    qint64 selectedFolderFilter() const;
 
     void refreshTodos();
     void addTodo();
@@ -67,6 +80,10 @@ private:
     void insertImage(const QImage& image, const QString& sourceName = QString());
     QString saveImageAttachment(const QImage& image, const QString& sourceName, QString* error);
 
+    void cacheNote(const NoteRecord& note);
+    int summaryRevision(qint64 noteId) const;
+    void selectCurrentFolderInEditor();
+
     void summonSticky();
     void showMainWindow();
     void requestQuit();
@@ -75,19 +92,30 @@ private:
 
     Database* m_database = nullptr;
     qint64 m_currentNoteId = -1;
+    qint64 m_currentFolderId = Database::UnfiledFolder;
+    QString m_currentNoteKind = QStringLiteral("note");
+    int m_currentBodyRevision = 0;
+    QByteArray m_currentContentHash;
+    QDateTime m_currentCreatedAt;
     bool m_loadingNote = false;
+    bool m_loadingFolders = false;
     bool m_loadingTodos = false;
     bool m_dirty = false;
     bool m_quitting = false;
     bool m_trayHintShown = false;
 
+    QCache<qint64, NoteRecord> m_noteCache;
+
     QListWidget* m_noteList = nullptr;
     QLineEdit* m_searchEdit = nullptr;
+    QComboBox* m_folderFilter = nullptr;
+    QPushButton* m_folderManageButton = nullptr;
     QPushButton* m_newNoteButton = nullptr;
     QPushButton* m_stickyButton = nullptr;
     QLabel* m_noteCountLabel = nullptr;
 
     QLineEdit* m_titleEdit = nullptr;
+    QComboBox* m_noteFolderCombo = nullptr;
     NoteEditor* m_editor = nullptr;
     QToolButton* m_boldButton = nullptr;
     QToolButton* m_italicButton = nullptr;
@@ -106,4 +134,3 @@ private:
     QMenu* m_trayMenu = nullptr;
     GlobalHotkey* m_globalHotkey = nullptr;
 };
-

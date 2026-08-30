@@ -1,27 +1,34 @@
 #include "Database.h"
 
+#include <QCryptographicHash>
 #include <QDir>
+#include <QMetaType>
+#include <QRegularExpression>
 #include <QSqlDatabase>
 #include <QSqlError>
 #include <QSqlQuery>
 #include <QStandardPaths>
 #include <QStringList>
 #include <QVariant>
+#include <QVector>
+
+#include <algorithm>
 
 namespace {
 
+constexpr int kSchemaVersion = 2;
+constexpr int kExcerptLength = 180;
+
 void clearError(QString *error)
 {
-    if (error) {
+    if (error)
         error->clear();
-    }
 }
 
 void setError(QString *error, const QString &message)
 {
-    if (error) {
+    if (error)
         *error = message;
-    }
 }
 
 QString queryError(const QString &operation, const QSqlQuery &query)
@@ -44,18 +51,77 @@ QString nonNullText(const QString &value)
     return value.isNull() ? QStringLiteral("") : value;
 }
 
+QVariant nullableId(qint64 id)
+{
+    if (id > 0)
+        return QVariant::fromValue(id);
+    return QVariant(QMetaType::fromType<qint64>());
+}
+
 QDateTime fromStorageDateTime(const QVariant &value)
 {
-    if (value.isNull()) {
+    if (value.isNull())
         return {};
-    }
 
     const QString text = value.toString();
     QDateTime dateTime = QDateTime::fromString(text, Qt::ISODateWithMs);
-    if (!dateTime.isValid()) {
+    if (!dateTime.isValid())
         dateTime = QDateTime::fromString(text, Qt::ISODate);
-    }
     return dateTime;
+}
+
+QByteArray contentHash(const QString &html)
+{
+    return QCryptographicHash::hash(html.toUtf8(), QCryptographicHash::Sha256);
+}
+
+QString noteExcerpt(const QString &plainText)
+{
+    QString excerpt = plainText;
+    excerpt.replace(QRegularExpression(QStringLiteral("\\s+")), QStringLiteral(" "));
+    return excerpt.trimmed().left(kExcerptLength);
+}
+
+QString normalizedKind(const QString &kind)
+{
+    return kind == QStringLiteral("sticky") ? QStringLiteral("sticky")
+                                             : QStringLiteral("note");
+}
+
+QString stickyTitle(const QString &text)
+{
+    const QStringList lines = text.split(QLatin1Char('\n'));
+    for (const QString &line : lines) {
+        const QString candidate = line.simplified();
+        if (!candidate.isEmpty())
+            return candidate.left(42);
+    }
+    return QStringLiteral("快速便签");
+}
+
+QString stickyHtml(const QString &text)
+{
+    QString escaped = text;
+    escaped.replace(QStringLiteral("\r\n"), QStringLiteral("\n"));
+    escaped.replace(QLatin1Char('\r'), QLatin1Char('\n'));
+    escaped = escaped.toHtmlEscaped();
+    escaped.replace(QLatin1Char('\n'), QStringLiteral("<br>"));
+    return QStringLiteral("<p>%1</p>").arg(escaped);
+}
+
+QString likePattern(const QString &filter)
+{
+    QString escaped = filter;
+    escaped.replace(QLatin1Char('\\'), QStringLiteral("\\\\"));
+    escaped.replace(QLatin1Char('%'), QStringLiteral("\\%"));
+    escaped.replace(QLatin1Char('_'), QStringLiteral("\\_"));
+    return QStringLiteral("%") + escaped + QStringLiteral("%");
+}
+
+QString ftsPhrase(QString filter)
+{
+    filter.replace(QLatin1Char('"'), QStringLiteral("\"\""));
+    return QStringLiteral("\"") + filter + QStringLiteral("\"");
 }
 
 QSqlDatabase openedDatabase(const QString &connectionName, QString *error)
@@ -75,18 +141,16 @@ QSqlDatabase openedDatabase(const QString &connectionName, QString *error)
 
 bool beginTransaction(QSqlDatabase &database, QString *error)
 {
-    if (database.transaction()) {
+    if (database.transaction())
         return true;
-    }
     setError(error, databaseError(QStringLiteral("无法开始数据库事务"), database));
     return false;
 }
 
 bool commitTransaction(QSqlDatabase &database, QString *error)
 {
-    if (database.commit()) {
+    if (database.commit())
         return true;
-    }
     setError(error, databaseError(QStringLiteral("无法提交数据库事务"), database));
     database.rollback();
     return false;
@@ -97,11 +161,61 @@ bool executeSchemaStatement(QSqlDatabase &database,
                             QString *error)
 {
     QSqlQuery query(database);
-    if (query.exec(statement)) {
+    if (query.exec(statement))
         return true;
-    }
     setError(error, queryError(QStringLiteral("初始化数据库失败"), query));
     return false;
+}
+
+bool tableHasColumn(QSqlDatabase &database,
+                    const QString &table,
+                    const QString &column,
+                    QString *error)
+{
+    QSqlQuery query(database);
+    if (!query.exec(QStringLiteral("PRAGMA table_info(%1)").arg(table))) {
+        setError(error, queryError(QStringLiteral("检查数据库字段失败"), query));
+        return false;
+    }
+    while (query.next()) {
+        if (query.value(1).toString() == column)
+            return true;
+    }
+    return false;
+}
+
+bool ensureColumn(QSqlDatabase &database,
+                  const QString &table,
+                  const QString &column,
+                  const QString &definition,
+                  QString *error)
+{
+    QString probeError;
+    if (tableHasColumn(database, table, column, &probeError))
+        return true;
+    if (!probeError.isEmpty()) {
+        setError(error, probeError);
+        return false;
+    }
+    return executeSchemaStatement(
+        database,
+        QStringLiteral("ALTER TABLE %1 ADD COLUMN %2 %3").arg(table, column, definition),
+        error);
+}
+
+NoteSummary summaryFromQuery(const QSqlQuery &query)
+{
+    NoteSummary record;
+    record.id = query.value(0).toLongLong();
+    record.title = query.value(1).toString();
+    record.excerpt = query.value(2).toString();
+    record.folderId = query.value(3).isNull() ? 0 : query.value(3).toLongLong();
+    record.kind = query.value(4).toString();
+    record.bodyRevision = query.value(5).toInt();
+    record.contentHash = query.value(6).toByteArray();
+    record.createdAt = fromStorageDateTime(query.value(7));
+    record.updatedAt = fromStorageDateTime(query.value(8));
+    return record;
 }
 
 NoteRecord noteFromQuery(const QSqlQuery &query)
@@ -111,8 +225,23 @@ NoteRecord noteFromQuery(const QSqlQuery &query)
     record.title = query.value(1).toString();
     record.html = query.value(2).toString();
     record.plainText = query.value(3).toString();
-    record.createdAt = fromStorageDateTime(query.value(4));
-    record.updatedAt = fromStorageDateTime(query.value(5));
+    record.excerpt = query.value(4).toString();
+    record.folderId = query.value(5).isNull() ? 0 : query.value(5).toLongLong();
+    record.kind = query.value(6).toString();
+    record.bodyRevision = query.value(7).toInt();
+    record.contentHash = query.value(8).toByteArray();
+    record.createdAt = fromStorageDateTime(query.value(9));
+    record.updatedAt = fromStorageDateTime(query.value(10));
+    return record;
+}
+
+FolderRecord folderFromQuery(const QSqlQuery &query)
+{
+    FolderRecord record;
+    record.id = query.value(0).toLongLong();
+    record.parentId = query.value(1).isNull() ? 0 : query.value(1).toLongLong();
+    record.name = query.value(2).toString();
+    record.sortOrder = query.value(3).toInt();
     return record;
 }
 
@@ -139,15 +268,13 @@ Database::Database()
 
 Database::~Database()
 {
-    if (!QSqlDatabase::contains(connectionName_)) {
+    if (!QSqlDatabase::contains(connectionName_))
         return;
-    }
 
     {
         QSqlDatabase database = QSqlDatabase::database(connectionName_, false);
-        if (database.isValid()) {
+        if (database.isValid())
             database.close();
-        }
     }
     QSqlDatabase::removeDatabase(connectionName_);
 }
@@ -155,6 +282,7 @@ Database::~Database()
 bool Database::open(QString *error)
 {
     clearError(error);
+    ftsEnabled_ = false;
 
     if (dataDirectory_.isEmpty()) {
         setError(error, QStringLiteral("系统未提供可写的应用数据目录。"));
@@ -200,47 +328,282 @@ bool Database::open(QString *error)
         return false;
     }
 
-    if (!beginTransaction(database, error)) {
+    int previousSchemaVersion = 0;
+    if (pragma.exec(QStringLiteral("PRAGMA user_version")) && pragma.next())
+        previousSchemaVersion = pragma.value(0).toInt();
+
+    if (previousSchemaVersion > kSchemaVersion) {
+        setError(error,
+                 QStringLiteral("数据库版本 %1 高于当前程序支持的版本 %2，请升级 FeatherNote。")
+                     .arg(previousSchemaVersion)
+                     .arg(kSchemaVersion));
         return false;
     }
 
-    const QStringList schemaStatements = {
-        QStringLiteral(
-            "CREATE TABLE IF NOT EXISTS notes ("
-            "id INTEGER PRIMARY KEY AUTOINCREMENT,"
-            "title TEXT NOT NULL DEFAULT '',"
-            "html TEXT NOT NULL DEFAULT '',"
-            "plain_text TEXT NOT NULL DEFAULT '',"
-            "created_at TEXT NOT NULL,"
-            "updated_at TEXT NOT NULL,"
-            "deleted_at TEXT NULL)"),
-        QStringLiteral(
-            "CREATE INDEX IF NOT EXISTS idx_notes_active_updated "
-            "ON notes(deleted_at, updated_at DESC)"),
-        QStringLiteral(
-            "CREATE TABLE IF NOT EXISTS todos ("
-            "id INTEGER PRIMARY KEY AUTOINCREMENT,"
-            "text TEXT NOT NULL,"
-            "done INTEGER NOT NULL DEFAULT 0 CHECK(done IN (0, 1)),"
-            "due_at TEXT NULL,"
-            "sort_order INTEGER NOT NULL DEFAULT 0)"),
-        QStringLiteral(
-            "CREATE INDEX IF NOT EXISTS idx_todos_order "
-            "ON todos(done, sort_order, id)"),
-        QStringLiteral(
-            "CREATE TABLE IF NOT EXISTS settings ("
-            "key TEXT PRIMARY KEY,"
-            "value TEXT NOT NULL DEFAULT '')")
-    };
+    if (previousSchemaVersion < kSchemaVersion) {
+        if (!beginTransaction(database, error))
+            return false;
 
-    for (const QString &statement : schemaStatements) {
-        if (!executeSchemaStatement(database, statement, error)) {
+        const QStringList baseSchemaStatements = {
+            QStringLiteral(
+                "CREATE TABLE IF NOT EXISTS folders ("
+                "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                "parent_id INTEGER NULL REFERENCES folders(id) ON DELETE SET NULL,"
+                "name TEXT NOT NULL,"
+                "sort_order INTEGER NOT NULL DEFAULT 0,"
+                "created_at TEXT NOT NULL,"
+                "updated_at TEXT NOT NULL)"),
+            QStringLiteral(
+                "CREATE TABLE IF NOT EXISTS notes ("
+                "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                "folder_id INTEGER NULL REFERENCES folders(id) ON DELETE SET NULL,"
+                "kind TEXT NOT NULL DEFAULT 'note' CHECK(kind IN ('note', 'sticky')),"
+                "title TEXT NOT NULL DEFAULT '',"
+                "html TEXT NOT NULL DEFAULT '',"
+                "plain_text TEXT NOT NULL DEFAULT '',"
+                "excerpt TEXT NOT NULL DEFAULT '',"
+                "body_revision INTEGER NOT NULL DEFAULT 1,"
+                "content_hash BLOB NOT NULL DEFAULT X'',"
+                "created_at TEXT NOT NULL,"
+                "updated_at TEXT NOT NULL,"
+                "deleted_at TEXT NULL)"),
+            QStringLiteral(
+                "CREATE TABLE IF NOT EXISTS todos ("
+                "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                "text TEXT NOT NULL,"
+                "done INTEGER NOT NULL DEFAULT 0 CHECK(done IN (0, 1)),"
+                "due_at TEXT NULL,"
+                "sort_order INTEGER NOT NULL DEFAULT 0)"),
+            QStringLiteral(
+                "CREATE TABLE IF NOT EXISTS settings ("
+                "key TEXT PRIMARY KEY,"
+                "value TEXT NOT NULL DEFAULT '')")
+        };
+
+        for (const QString &statement : baseSchemaStatements) {
+            if (!executeSchemaStatement(database, statement, error)) {
+                database.rollback();
+                return false;
+            }
+        }
+
+        const struct {
+            const char *name;
+            const char *definition;
+        } noteColumns[] = {
+            {"folder_id", "INTEGER NULL REFERENCES folders(id) ON DELETE SET NULL"},
+            {"kind", "TEXT NOT NULL DEFAULT 'note'"},
+            {"excerpt", "TEXT NOT NULL DEFAULT ''"},
+            {"body_revision", "INTEGER NOT NULL DEFAULT 1"},
+            {"content_hash", "BLOB NOT NULL DEFAULT X''"}
+        };
+
+        for (const auto &column : noteColumns) {
+            if (!ensureColumn(database,
+                              QStringLiteral("notes"),
+                              QString::fromLatin1(column.name),
+                              QString::fromLatin1(column.definition),
+                              error)) {
+                database.rollback();
+                return false;
+            }
+        }
+
+        const QStringList indexStatements = {
+            QStringLiteral(
+                "CREATE INDEX IF NOT EXISTS idx_notes_active_updated "
+                "ON notes(deleted_at, updated_at DESC, id DESC)"),
+            QStringLiteral(
+                "CREATE INDEX IF NOT EXISTS idx_notes_folder_active_updated "
+                "ON notes(folder_id, deleted_at, updated_at DESC, id DESC)"),
+            QStringLiteral(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_notes_single_sticky "
+                "ON notes(kind) WHERE kind = 'sticky' AND deleted_at IS NULL"),
+            QStringLiteral(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_folders_parent_name "
+                "ON folders(COALESCE(parent_id, 0), name COLLATE NOCASE)"),
+            QStringLiteral(
+                "CREATE INDEX IF NOT EXISTS idx_folders_order "
+                "ON folders(parent_id, sort_order, name COLLATE NOCASE)"),
+            QStringLiteral(
+                "CREATE INDEX IF NOT EXISTS idx_todos_order "
+                "ON todos(done, sort_order, id)")
+        };
+
+        for (const QString &statement : indexStatements) {
+            if (!executeSchemaStatement(database, statement, error)) {
+                database.rollback();
+                return false;
+            }
+        }
+
+        QSqlQuery normalize(database);
+        if (!normalize.exec(QStringLiteral(
+                "UPDATE notes SET "
+                "kind = CASE WHEN kind = 'sticky' THEN 'sticky' ELSE 'note' END, "
+                "body_revision = CASE WHEN body_revision < 1 THEN 1 ELSE body_revision END, "
+                "excerpt = CASE WHEN excerpt = '' THEN "
+                "substr(trim(replace(replace(plain_text, char(13), ' '), char(10), ' ')), 1, 180) "
+                "ELSE excerpt END"))) {
+            setError(error, queryError(QStringLiteral("迁移笔记摘要失败"), normalize));
             database.rollback();
             return false;
         }
+
+        QVector<QPair<qint64, QByteArray>> missingHashes;
+        QSqlQuery hashScan(database);
+        if (!hashScan.exec(QStringLiteral(
+                "SELECT id, html FROM notes WHERE length(content_hash) = 0"))) {
+            setError(error, queryError(QStringLiteral("读取待迁移笔记失败"), hashScan));
+            database.rollback();
+            return false;
+        }
+        while (hashScan.next())
+            missingHashes.append({hashScan.value(0).toLongLong(),
+                                  contentHash(hashScan.value(1).toString())});
+        hashScan.finish();
+
+        QSqlQuery hashUpdate(database);
+        hashUpdate.prepare(QStringLiteral(
+            "UPDATE notes SET content_hash = :content_hash WHERE id = :id"));
+        for (const auto &entry : missingHashes) {
+            hashUpdate.bindValue(QStringLiteral(":content_hash"), entry.second);
+            hashUpdate.bindValue(QStringLiteral(":id"), entry.first);
+            if (!hashUpdate.exec()) {
+                setError(error, queryError(QStringLiteral("迁移笔记哈希失败"), hashUpdate));
+                database.rollback();
+                return false;
+            }
+            hashUpdate.finish();
+        }
+
+        QString legacyQuickNote;
+        bool legacyQuickNoteExists = false;
+        QSqlQuery legacyQuery(database);
+        legacyQuery.prepare(QStringLiteral(
+            "SELECT value FROM settings WHERE key = 'quick_note'"));
+        if (!legacyQuery.exec()) {
+            setError(error, queryError(QStringLiteral("读取旧快捷便签失败"), legacyQuery));
+            database.rollback();
+            return false;
+        }
+        if (legacyQuery.next()) {
+            legacyQuickNoteExists = true;
+            legacyQuickNote = legacyQuery.value(0).toString();
+        }
+        legacyQuery.finish();
+
+        if (legacyQuickNoteExists && !legacyQuickNote.trimmed().isEmpty()) {
+            QSqlQuery existingSticky(database);
+            if (!existingSticky.exec(QStringLiteral(
+                    "SELECT id FROM notes WHERE kind = 'sticky' "
+                    "AND deleted_at IS NULL LIMIT 1"))) {
+                setError(error, queryError(QStringLiteral("检查便签迁移状态失败"), existingSticky));
+                database.rollback();
+                return false;
+            }
+            const bool hasSticky = existingSticky.next();
+            existingSticky.finish();
+            if (!hasSticky) {
+                const QString html = stickyHtml(legacyQuickNote);
+                const QString now = toStorageDateTime(QDateTime::currentDateTimeUtc());
+                QSqlQuery insertSticky(database);
+                insertSticky.prepare(QStringLiteral(
+                    "INSERT INTO notes(folder_id, kind, title, html, plain_text, excerpt, "
+                    "body_revision, content_hash, created_at, updated_at) "
+                    "VALUES(NULL, 'sticky', :title, :html, :plain_text, :excerpt, 1, "
+                    ":content_hash, :created_at, :updated_at)"));
+                insertSticky.bindValue(QStringLiteral(":title"), stickyTitle(legacyQuickNote));
+                insertSticky.bindValue(QStringLiteral(":html"), html);
+                insertSticky.bindValue(QStringLiteral(":plain_text"), legacyQuickNote);
+                insertSticky.bindValue(QStringLiteral(":excerpt"), noteExcerpt(legacyQuickNote));
+                insertSticky.bindValue(QStringLiteral(":content_hash"), contentHash(html));
+                insertSticky.bindValue(QStringLiteral(":created_at"), now);
+                insertSticky.bindValue(QStringLiteral(":updated_at"), now);
+                if (!insertSticky.exec()) {
+                    setError(error, queryError(QStringLiteral("迁移快捷便签失败"), insertSticky));
+                    database.rollback();
+                    return false;
+                }
+            }
+        }
+
+        if (legacyQuickNoteExists) {
+            QSqlQuery removeLegacy(database);
+            if (!removeLegacy.exec(QStringLiteral(
+                    "DELETE FROM settings WHERE key = 'quick_note'"))) {
+                setError(error, queryError(QStringLiteral("清理旧快捷便签设置失败"), removeLegacy));
+                database.rollback();
+                return false;
+            }
+        }
+
+        if (!executeSchemaStatement(database,
+                                    QStringLiteral("PRAGMA user_version = %1")
+                                        .arg(kSchemaVersion),
+                                    error)) {
+            database.rollback();
+            return false;
+        }
+        if (!commitTransaction(database, error))
+            return false;
     }
 
-    return commitTransaction(database, error);
+    QSqlQuery ftsProbe(database);
+    bool ftsTableExisted = false;
+    ftsProbe.prepare(QStringLiteral(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'notes_fts'"));
+    if (ftsProbe.exec())
+        ftsTableExisted = ftsProbe.next();
+
+    QSqlQuery fts(database);
+    if (fts.exec(QStringLiteral(
+            "CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5("
+            "title, plain_text, content='notes', content_rowid='id', tokenize='trigram')"))) {
+        QSqlQuery legacyUpdateTrigger(database);
+        bool triggersReady = legacyUpdateTrigger.exec(QStringLiteral(
+            "DROP TRIGGER IF EXISTS notes_fts_au"));
+        const QStringList triggerStatements = {
+            QStringLiteral(
+                "CREATE TRIGGER IF NOT EXISTS notes_fts_ai AFTER INSERT ON notes "
+                "WHEN new.deleted_at IS NULL BEGIN "
+                "INSERT INTO notes_fts(rowid, title, plain_text) "
+                "VALUES(new.id, new.title, new.plain_text); END"),
+            QStringLiteral(
+                "CREATE TRIGGER IF NOT EXISTS notes_fts_ad AFTER DELETE ON notes "
+                "WHEN old.deleted_at IS NULL BEGIN "
+                "INSERT INTO notes_fts(notes_fts, rowid, title, plain_text) "
+                "VALUES('delete', old.id, old.title, old.plain_text); END"),
+            QStringLiteral(
+                "CREATE TRIGGER IF NOT EXISTS notes_fts_au_v2 "
+                "AFTER UPDATE OF title, plain_text, deleted_at ON notes BEGIN "
+                "INSERT INTO notes_fts(notes_fts, rowid, title, plain_text) "
+                "SELECT 'delete', old.id, old.title, old.plain_text "
+                "WHERE old.deleted_at IS NULL; "
+                "INSERT INTO notes_fts(rowid, title, plain_text) "
+                "SELECT new.id, new.title, new.plain_text "
+                "WHERE new.deleted_at IS NULL; END")
+        };
+
+        for (const QString &statement : triggerStatements) {
+            if (!triggersReady)
+                break;
+            QSqlQuery trigger(database);
+            if (!trigger.exec(statement)) {
+                triggersReady = false;
+                break;
+            }
+        }
+
+        if (triggersReady && (!ftsTableExisted || previousSchemaVersion < kSchemaVersion)) {
+            QSqlQuery rebuild(database);
+            triggersReady = rebuild.exec(QStringLiteral(
+                "INSERT INTO notes_fts(notes_fts) VALUES('rebuild')"));
+        }
+        ftsEnabled_ = triggersReady;
+    }
+
+    return true;
 }
 
 QString Database::dataDirectory() const
@@ -248,39 +611,57 @@ QString Database::dataDirectory() const
     return dataDirectory_;
 }
 
-QList<NoteRecord> Database::listNotes(const QString &filter,
-                                      QString *error) const
+QList<NoteSummary> Database::listNoteSummaries(const QString &filter,
+                                               QString *error,
+                                               qint64 folderFilter) const
 {
     clearError(error);
-    QList<NoteRecord> records;
+    QList<NoteSummary> records;
     QSqlDatabase database = openedDatabase(connectionName_, error);
-    if (!database.isValid()) {
+    if (!database.isValid())
         return records;
+
+    QString sql = QStringLiteral(
+        "SELECT n.id, n.title, n.excerpt, n.folder_id, n.kind, "
+        "n.body_revision, n.content_hash, n.created_at, n.updated_at "
+        "FROM notes n WHERE n.deleted_at IS NULL ");
+
+    if (folderFilter == UnfiledFolder)
+        sql += QStringLiteral("AND n.folder_id IS NULL ");
+    else if (folderFilter > 0)
+        sql += QStringLiteral("AND n.folder_id = :folder_id ");
+
+    const QString trimmedFilter = filter.trimmed();
+    if (!trimmedFilter.isEmpty()) {
+        if (ftsEnabled_ && trimmedFilter.size() >= 3) {
+            sql += QStringLiteral(
+                "AND n.id IN (SELECT rowid FROM notes_fts "
+                "WHERE notes_fts MATCH :fts_query) ");
+        } else {
+            sql += QStringLiteral(
+                "AND (n.title LIKE :filter ESCAPE '\\' "
+                "OR n.plain_text LIKE :filter ESCAPE '\\') ");
+        }
     }
+    sql += QStringLiteral("ORDER BY n.updated_at DESC, n.id DESC");
 
     QSqlQuery query(database);
-    if (filter.isEmpty()) {
-        query.prepare(QStringLiteral(
-            "SELECT id, title, html, plain_text, created_at, updated_at "
-            "FROM notes WHERE deleted_at IS NULL "
-            "ORDER BY updated_at DESC, id DESC"));
-    } else {
-        query.prepare(QStringLiteral(
-            "SELECT id, title, html, plain_text, created_at, updated_at "
-            "FROM notes WHERE deleted_at IS NULL "
-            "AND (title LIKE :filter OR plain_text LIKE :filter) "
-            "ORDER BY updated_at DESC, id DESC"));
-        query.bindValue(QStringLiteral(":filter"),
-                        QStringLiteral("%") + filter + QStringLiteral("%"));
+    query.prepare(sql);
+    if (folderFilter > 0)
+        query.bindValue(QStringLiteral(":folder_id"), folderFilter);
+    if (!trimmedFilter.isEmpty()) {
+        if (ftsEnabled_ && trimmedFilter.size() >= 3)
+            query.bindValue(QStringLiteral(":fts_query"), ftsPhrase(trimmedFilter));
+        else
+            query.bindValue(QStringLiteral(":filter"), likePattern(trimmedFilter));
     }
 
     if (!query.exec()) {
-        setError(error, queryError(QStringLiteral("读取笔记失败"), query));
+        setError(error, queryError(QStringLiteral("读取笔记摘要失败"), query));
         return {};
     }
-    while (query.next()) {
-        records.append(noteFromQuery(query));
-    }
+    while (query.next())
+        records.append(summaryFromQuery(query));
     return records;
 }
 
@@ -288,44 +669,52 @@ std::optional<NoteRecord> Database::note(qint64 id, QString *error) const
 {
     clearError(error);
     QSqlDatabase database = openedDatabase(connectionName_, error);
-    if (!database.isValid()) {
+    if (!database.isValid())
         return std::nullopt;
-    }
 
     QSqlQuery query(database);
     query.prepare(QStringLiteral(
-        "SELECT id, title, html, plain_text, created_at, updated_at "
+        "SELECT id, title, html, plain_text, excerpt, folder_id, kind, "
+        "body_revision, content_hash, created_at, updated_at "
         "FROM notes WHERE id = :id AND deleted_at IS NULL"));
     query.bindValue(QStringLiteral(":id"), id);
     if (!query.exec()) {
         setError(error, queryError(QStringLiteral("读取笔记失败"), query));
         return std::nullopt;
     }
-    if (!query.next()) {
+    if (!query.next())
         return std::nullopt;
-    }
     return noteFromQuery(query);
 }
 
 qint64 Database::createNote(const QString &title,
                             const QString &html,
                             const QString &plainText,
-                            QString *error)
+                            QString *error,
+                            qint64 folderId,
+                            const QString &kind)
 {
     clearError(error);
     QSqlDatabase database = openedDatabase(connectionName_, error);
-    if (!database.isValid() || !beginTransaction(database, error)) {
+    if (!database.isValid() || !beginTransaction(database, error))
         return 0;
-    }
 
+    const QString safeHtml = nonNullText(html);
+    const QString safePlainText = nonNullText(plainText);
     const QString now = toStorageDateTime(QDateTime::currentDateTimeUtc());
     QSqlQuery query(database);
     query.prepare(QStringLiteral(
-        "INSERT INTO notes(title, html, plain_text, created_at, updated_at) "
-        "VALUES(:title, :html, :plain_text, :created_at, :updated_at)"));
+        "INSERT INTO notes(folder_id, kind, title, html, plain_text, excerpt, "
+        "body_revision, content_hash, created_at, updated_at) "
+        "VALUES(:folder_id, :kind, :title, :html, :plain_text, :excerpt, 1, "
+        ":content_hash, :created_at, :updated_at)"));
+    query.bindValue(QStringLiteral(":folder_id"), nullableId(folderId));
+    query.bindValue(QStringLiteral(":kind"), normalizedKind(kind));
     query.bindValue(QStringLiteral(":title"), nonNullText(title));
-    query.bindValue(QStringLiteral(":html"), nonNullText(html));
-    query.bindValue(QStringLiteral(":plain_text"), nonNullText(plainText));
+    query.bindValue(QStringLiteral(":html"), safeHtml);
+    query.bindValue(QStringLiteral(":plain_text"), safePlainText);
+    query.bindValue(QStringLiteral(":excerpt"), noteExcerpt(safePlainText));
+    query.bindValue(QStringLiteral(":content_hash"), contentHash(safeHtml));
     query.bindValue(QStringLiteral(":created_at"), now);
     query.bindValue(QStringLiteral(":updated_at"), now);
 
@@ -340,9 +729,8 @@ qint64 Database::createNote(const QString &title,
         database.rollback();
         return 0;
     }
-    if (!commitTransaction(database, error)) {
+    if (!commitTransaction(database, error))
         return 0;
-    }
     return id;
 }
 
@@ -354,18 +742,26 @@ bool Database::updateNote(qint64 id,
 {
     clearError(error);
     QSqlDatabase database = openedDatabase(connectionName_, error);
-    if (!database.isValid() || !beginTransaction(database, error)) {
+    if (!database.isValid() || !beginTransaction(database, error))
         return false;
-    }
 
+    const QString safeHtml = nonNullText(html);
+    const QString safePlainText = nonNullText(plainText);
+    const QByteArray hash = contentHash(safeHtml);
     QSqlQuery query(database);
     query.prepare(QStringLiteral(
         "UPDATE notes SET title = :title, html = :html, "
-        "plain_text = :plain_text, updated_at = :updated_at "
+        "plain_text = :plain_text, excerpt = :excerpt, "
+        "body_revision = CASE WHEN content_hash = :old_hash "
+        "THEN body_revision ELSE body_revision + 1 END, "
+        "content_hash = :content_hash, updated_at = :updated_at "
         "WHERE id = :id AND deleted_at IS NULL"));
     query.bindValue(QStringLiteral(":title"), nonNullText(title));
-    query.bindValue(QStringLiteral(":html"), nonNullText(html));
-    query.bindValue(QStringLiteral(":plain_text"), nonNullText(plainText));
+    query.bindValue(QStringLiteral(":html"), safeHtml);
+    query.bindValue(QStringLiteral(":plain_text"), safePlainText);
+    query.bindValue(QStringLiteral(":excerpt"), noteExcerpt(safePlainText));
+    query.bindValue(QStringLiteral(":old_hash"), hash);
+    query.bindValue(QStringLiteral(":content_hash"), hash);
     query.bindValue(QStringLiteral(":updated_at"),
                     toStorageDateTime(QDateTime::currentDateTimeUtc()));
     query.bindValue(QStringLiteral(":id"), id);
@@ -382,13 +778,70 @@ bool Database::updateNote(qint64 id,
     return commitTransaction(database, error);
 }
 
+bool Database::renameNote(qint64 id,
+                          const QString &title,
+                          QString *error)
+{
+    clearError(error);
+    QSqlDatabase database = openedDatabase(connectionName_, error);
+    if (!database.isValid() || !beginTransaction(database, error))
+        return false;
+
+    QSqlQuery query(database);
+    query.prepare(QStringLiteral(
+        "UPDATE notes SET title = :title, updated_at = :updated_at "
+        "WHERE id = :id AND deleted_at IS NULL"));
+    query.bindValue(QStringLiteral(":title"), nonNullText(title));
+    query.bindValue(QStringLiteral(":updated_at"),
+                    toStorageDateTime(QDateTime::currentDateTimeUtc()));
+    query.bindValue(QStringLiteral(":id"), id);
+    if (!query.exec()) {
+        setError(error, queryError(QStringLiteral("重命名笔记失败"), query));
+        database.rollback();
+        return false;
+    }
+    if (query.numRowsAffected() == 0) {
+        setError(error, QStringLiteral("重命名笔记失败：笔记不存在或已删除。"));
+        database.rollback();
+        return false;
+    }
+    return commitTransaction(database, error);
+}
+
+bool Database::moveNoteToFolder(qint64 id, qint64 folderId, QString *error)
+{
+    clearError(error);
+    QSqlDatabase database = openedDatabase(connectionName_, error);
+    if (!database.isValid() || !beginTransaction(database, error))
+        return false;
+
+    QSqlQuery query(database);
+    query.prepare(QStringLiteral(
+        "UPDATE notes SET folder_id = :folder_id, updated_at = :updated_at "
+        "WHERE id = :id AND deleted_at IS NULL"));
+    query.bindValue(QStringLiteral(":folder_id"), nullableId(folderId));
+    query.bindValue(QStringLiteral(":updated_at"),
+                    toStorageDateTime(QDateTime::currentDateTimeUtc()));
+    query.bindValue(QStringLiteral(":id"), id);
+    if (!query.exec()) {
+        setError(error, queryError(QStringLiteral("移动笔记失败"), query));
+        database.rollback();
+        return false;
+    }
+    if (query.numRowsAffected() == 0) {
+        setError(error, QStringLiteral("移动笔记失败：笔记或分组不存在。"));
+        database.rollback();
+        return false;
+    }
+    return commitTransaction(database, error);
+}
+
 bool Database::softDeleteNote(qint64 id, QString *error)
 {
     clearError(error);
     QSqlDatabase database = openedDatabase(connectionName_, error);
-    if (!database.isValid() || !beginTransaction(database, error)) {
+    if (!database.isValid() || !beginTransaction(database, error))
         return false;
-    }
 
     const QString now = toStorageDateTime(QDateTime::currentDateTimeUtc());
     QSqlQuery query(database);
@@ -411,14 +864,261 @@ bool Database::softDeleteNote(qint64 id, QString *error)
     return commitTransaction(database, error);
 }
 
+QList<FolderRecord> Database::listFolders(QString *error) const
+{
+    clearError(error);
+    QList<FolderRecord> records;
+    QSqlDatabase database = openedDatabase(connectionName_, error);
+    if (!database.isValid())
+        return records;
+
+    QSqlQuery query(database);
+    if (!query.exec(QStringLiteral(
+            "SELECT id, parent_id, name, sort_order FROM folders "
+            "ORDER BY parent_id IS NOT NULL, parent_id, sort_order, name COLLATE NOCASE"))) {
+        setError(error, queryError(QStringLiteral("读取分组失败"), query));
+        return {};
+    }
+    while (query.next())
+        records.append(folderFromQuery(query));
+    return records;
+}
+
+qint64 Database::createFolder(const QString &name,
+                              QString *error,
+                              qint64 parentId)
+{
+    clearError(error);
+    const QString safeName = name.simplified();
+    if (safeName.isEmpty()) {
+        setError(error, QStringLiteral("分组名称不能为空。"));
+        return 0;
+    }
+
+    QSqlDatabase database = openedDatabase(connectionName_, error);
+    if (!database.isValid() || !beginTransaction(database, error))
+        return 0;
+
+    QSqlQuery orderQuery(database);
+    orderQuery.prepare(QStringLiteral(
+        "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM folders "
+        "WHERE COALESCE(parent_id, 0) = :parent_id"));
+    orderQuery.bindValue(QStringLiteral(":parent_id"), std::max<qint64>(0, parentId));
+    if (!orderQuery.exec() || !orderQuery.next()) {
+        setError(error, queryError(QStringLiteral("计算分组顺序失败"), orderQuery));
+        database.rollback();
+        return 0;
+    }
+    const int sortOrder = orderQuery.value(0).toInt();
+    orderQuery.finish();
+
+    const QString now = toStorageDateTime(QDateTime::currentDateTimeUtc());
+    QSqlQuery query(database);
+    query.prepare(QStringLiteral(
+        "INSERT INTO folders(parent_id, name, sort_order, created_at, updated_at) "
+        "VALUES(:parent_id, :name, :sort_order, :created_at, :updated_at)"));
+    query.bindValue(QStringLiteral(":parent_id"), nullableId(parentId));
+    query.bindValue(QStringLiteral(":name"), safeName);
+    query.bindValue(QStringLiteral(":sort_order"), sortOrder);
+    query.bindValue(QStringLiteral(":created_at"), now);
+    query.bindValue(QStringLiteral(":updated_at"), now);
+    if (!query.exec()) {
+        setError(error, queryError(QStringLiteral("创建分组失败"), query));
+        database.rollback();
+        return 0;
+    }
+    const qint64 id = query.lastInsertId().toLongLong();
+    if (id <= 0) {
+        setError(error, QStringLiteral("创建分组失败：数据库未返回有效编号。"));
+        database.rollback();
+        return 0;
+    }
+    if (!commitTransaction(database, error))
+        return 0;
+    return id;
+}
+
+bool Database::renameFolder(qint64 id,
+                            const QString &name,
+                            QString *error)
+{
+    clearError(error);
+    const QString safeName = name.simplified();
+    if (safeName.isEmpty()) {
+        setError(error, QStringLiteral("分组名称不能为空。"));
+        return false;
+    }
+
+    QSqlDatabase database = openedDatabase(connectionName_, error);
+    if (!database.isValid() || !beginTransaction(database, error))
+        return false;
+
+    QSqlQuery query(database);
+    query.prepare(QStringLiteral(
+        "UPDATE folders SET name = :name, updated_at = :updated_at WHERE id = :id"));
+    query.bindValue(QStringLiteral(":name"), safeName);
+    query.bindValue(QStringLiteral(":updated_at"),
+                    toStorageDateTime(QDateTime::currentDateTimeUtc()));
+    query.bindValue(QStringLiteral(":id"), id);
+    if (!query.exec()) {
+        setError(error, queryError(QStringLiteral("重命名分组失败"), query));
+        database.rollback();
+        return false;
+    }
+    if (query.numRowsAffected() == 0) {
+        setError(error, QStringLiteral("重命名分组失败：分组不存在。"));
+        database.rollback();
+        return false;
+    }
+    return commitTransaction(database, error);
+}
+
+bool Database::deleteFolder(qint64 id, QString *error)
+{
+    clearError(error);
+    QSqlDatabase database = openedDatabase(connectionName_, error);
+    if (!database.isValid() || !beginTransaction(database, error))
+        return false;
+
+    const QString now = toStorageDateTime(QDateTime::currentDateTimeUtc());
+    QSqlQuery detach(database);
+    detach.prepare(QStringLiteral(
+        "UPDATE notes SET folder_id = NULL, updated_at = :updated_at "
+        "WHERE folder_id = :id"));
+    detach.bindValue(QStringLiteral(":updated_at"), now);
+    detach.bindValue(QStringLiteral(":id"), id);
+    if (!detach.exec()) {
+        setError(error, queryError(QStringLiteral("移出分组中的笔记失败"), detach));
+        database.rollback();
+        return false;
+    }
+
+    QSqlQuery query(database);
+    query.prepare(QStringLiteral("DELETE FROM folders WHERE id = :id"));
+    query.bindValue(QStringLiteral(":id"), id);
+    if (!query.exec()) {
+        setError(error, queryError(QStringLiteral("删除分组失败"), query));
+        database.rollback();
+        return false;
+    }
+    if (query.numRowsAffected() == 0) {
+        setError(error, QStringLiteral("删除分组失败：分组不存在。"));
+        database.rollback();
+        return false;
+    }
+    return commitTransaction(database, error);
+}
+
+std::optional<NoteRecord> Database::stickyNote(QString *error) const
+{
+    clearError(error);
+    QSqlDatabase database = openedDatabase(connectionName_, error);
+    if (!database.isValid())
+        return std::nullopt;
+
+    QSqlQuery query(database);
+    if (!query.exec(QStringLiteral(
+            "SELECT id, title, html, plain_text, excerpt, folder_id, kind, "
+            "body_revision, content_hash, created_at, updated_at "
+            "FROM notes WHERE kind = 'sticky' AND deleted_at IS NULL "
+            "ORDER BY id LIMIT 1"))) {
+        setError(error, queryError(QStringLiteral("读取快捷便签失败"), query));
+        return std::nullopt;
+    }
+    if (!query.next())
+        return std::nullopt;
+    return noteFromQuery(query);
+}
+
+qint64 Database::saveStickyNote(const QString &text, QString *error)
+{
+    clearError(error);
+    QSqlDatabase database = openedDatabase(connectionName_, error);
+    if (!database.isValid() || !beginTransaction(database, error))
+        return -1;
+
+    qint64 id = 0;
+    QSqlQuery lookup(database);
+    if (!lookup.exec(QStringLiteral(
+            "SELECT id FROM notes WHERE kind = 'sticky' "
+            "AND deleted_at IS NULL ORDER BY id LIMIT 1"))) {
+        setError(error, queryError(QStringLiteral("查找快捷便签失败"), lookup));
+        database.rollback();
+        return -1;
+    }
+    if (lookup.next())
+        id = lookup.value(0).toLongLong();
+    lookup.finish();
+
+    if (id <= 0 && text.trimmed().isEmpty()) {
+        if (!commitTransaction(database, error))
+            return -1;
+        return 0;
+    }
+
+    const QString html = stickyHtml(text);
+    const QByteArray hash = contentHash(html);
+    const QString now = toStorageDateTime(QDateTime::currentDateTimeUtc());
+
+    if (id > 0) {
+        QSqlQuery update(database);
+        update.prepare(QStringLiteral(
+            "UPDATE notes SET html = :html, plain_text = :plain_text, "
+            "excerpt = :excerpt, body_revision = CASE WHEN content_hash = :old_hash "
+            "THEN body_revision ELSE body_revision + 1 END, "
+            "content_hash = :content_hash, updated_at = :updated_at "
+            "WHERE id = :id AND deleted_at IS NULL"));
+        update.bindValue(QStringLiteral(":html"), html);
+        update.bindValue(QStringLiteral(":plain_text"), nonNullText(text));
+        update.bindValue(QStringLiteral(":excerpt"), noteExcerpt(text));
+        update.bindValue(QStringLiteral(":old_hash"), hash);
+        update.bindValue(QStringLiteral(":content_hash"), hash);
+        update.bindValue(QStringLiteral(":updated_at"), now);
+        update.bindValue(QStringLiteral(":id"), id);
+        if (!update.exec() || update.numRowsAffected() == 0) {
+            setError(error, queryError(QStringLiteral("保存快捷便签失败"), update));
+            database.rollback();
+            return -1;
+        }
+    } else {
+        QSqlQuery insert(database);
+        insert.prepare(QStringLiteral(
+            "INSERT INTO notes(folder_id, kind, title, html, plain_text, excerpt, "
+            "body_revision, content_hash, created_at, updated_at) "
+            "VALUES(NULL, 'sticky', :title, :html, :plain_text, :excerpt, 1, "
+            ":content_hash, :created_at, :updated_at)"));
+        insert.bindValue(QStringLiteral(":title"), stickyTitle(text));
+        insert.bindValue(QStringLiteral(":html"), html);
+        insert.bindValue(QStringLiteral(":plain_text"), nonNullText(text));
+        insert.bindValue(QStringLiteral(":excerpt"), noteExcerpt(text));
+        insert.bindValue(QStringLiteral(":content_hash"), hash);
+        insert.bindValue(QStringLiteral(":created_at"), now);
+        insert.bindValue(QStringLiteral(":updated_at"), now);
+        if (!insert.exec()) {
+            setError(error, queryError(QStringLiteral("创建快捷便签失败"), insert));
+            database.rollback();
+            return -1;
+        }
+        id = insert.lastInsertId().toLongLong();
+        if (id <= 0) {
+            setError(error, QStringLiteral("创建快捷便签失败：数据库未返回有效编号。"));
+            database.rollback();
+            return -1;
+        }
+    }
+
+    if (!commitTransaction(database, error))
+        return -1;
+    return id;
+}
+
 QList<TodoRecord> Database::listTodos(QString *error) const
 {
     clearError(error);
     QList<TodoRecord> records;
     QSqlDatabase database = openedDatabase(connectionName_, error);
-    if (!database.isValid()) {
+    if (!database.isValid())
         return records;
-    }
 
     QSqlQuery query(database);
     query.prepare(QStringLiteral(
@@ -428,9 +1128,8 @@ QList<TodoRecord> Database::listTodos(QString *error) const
         setError(error, queryError(QStringLiteral("读取待办失败"), query));
         return {};
     }
-    while (query.next()) {
+    while (query.next())
         records.append(todoFromQuery(query));
-    }
     return records;
 }
 
@@ -438,9 +1137,8 @@ qint64 Database::createTodo(const QString &text, QString *error)
 {
     clearError(error);
     QSqlDatabase database = openedDatabase(connectionName_, error);
-    if (!database.isValid() || !beginTransaction(database, error)) {
+    if (!database.isValid() || !beginTransaction(database, error))
         return 0;
-    }
 
     QSqlQuery orderQuery(database);
     if (!orderQuery.exec(QStringLiteral(
@@ -470,9 +1168,8 @@ qint64 Database::createTodo(const QString &text, QString *error)
         database.rollback();
         return 0;
     }
-    if (!commitTransaction(database, error)) {
+    if (!commitTransaction(database, error))
         return 0;
-    }
     return id;
 }
 
@@ -480,9 +1177,8 @@ bool Database::updateTodoDone(qint64 id, bool done, QString *error)
 {
     clearError(error);
     QSqlDatabase database = openedDatabase(connectionName_, error);
-    if (!database.isValid() || !beginTransaction(database, error)) {
+    if (!database.isValid() || !beginTransaction(database, error))
         return false;
-    }
 
     QSqlQuery query(database);
     query.prepare(QStringLiteral(
@@ -506,9 +1202,8 @@ bool Database::deleteCompletedTodos(QString *error)
 {
     clearError(error);
     QSqlDatabase database = openedDatabase(connectionName_, error);
-    if (!database.isValid() || !beginTransaction(database, error)) {
+    if (!database.isValid() || !beginTransaction(database, error))
         return false;
-    }
 
     QSqlQuery query(database);
     query.prepare(QStringLiteral("DELETE FROM todos WHERE done = :done"));
@@ -523,41 +1218,11 @@ bool Database::deleteCompletedTodos(QString *error)
 
 QString Database::quickNote(QString *error) const
 {
-    clearError(error);
-    QSqlDatabase database = openedDatabase(connectionName_, error);
-    if (!database.isValid()) {
-        return {};
-    }
-
-    QSqlQuery query(database);
-    query.prepare(QStringLiteral(
-        "SELECT value FROM settings WHERE key = :key"));
-    query.bindValue(QStringLiteral(":key"), QStringLiteral("quick_note"));
-    if (!query.exec()) {
-        setError(error, queryError(QStringLiteral("读取快捷便签失败"), query));
-        return {};
-    }
-    return query.next() ? query.value(0).toString() : QString();
+    const std::optional<NoteRecord> record = stickyNote(error);
+    return record.has_value() ? record->plainText : QString();
 }
 
 bool Database::saveQuickNote(const QString &text, QString *error)
 {
-    clearError(error);
-    QSqlDatabase database = openedDatabase(connectionName_, error);
-    if (!database.isValid() || !beginTransaction(database, error)) {
-        return false;
-    }
-
-    QSqlQuery query(database);
-    query.prepare(QStringLiteral(
-        "INSERT INTO settings(key, value) VALUES(:key, :value) "
-        "ON CONFLICT(key) DO UPDATE SET value = excluded.value"));
-    query.bindValue(QStringLiteral(":key"), QStringLiteral("quick_note"));
-    query.bindValue(QStringLiteral(":value"), nonNullText(text));
-    if (!query.exec()) {
-        setError(error, queryError(QStringLiteral("保存快捷便签失败"), query));
-        database.rollback();
-        return false;
-    }
-    return commitTransaction(database, error);
+    return saveStickyNote(text, error) >= 0;
 }

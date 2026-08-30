@@ -12,7 +12,16 @@ $qtBin = Join-Path $qtRoot 'bin'
 $qtPlugins = Join-Path $qtRoot 'share\qt6\plugins'
 $ldd = 'D:\msys64\usr\bin\ldd.exe'
 $distRoot = Join-Path $repoRoot 'dist'
-$packageName = if ($Configuration -eq 'Release') { 'FeatherNote-0.1.0-portable' } else { 'FeatherNote-0.1.0-debug' }
+$cmakeContents = Get-Content -LiteralPath (Join-Path $repoRoot 'CMakeLists.txt') -Raw
+if ($cmakeContents -notmatch 'project\s*\(FeatherNote\s+VERSION\s+([0-9]+\.[0-9]+\.[0-9]+)') {
+    throw '无法从 CMakeLists.txt 解析 FeatherNote 版本号。'
+}
+$appVersion = $Matches[1]
+$packageName = if ($Configuration -eq 'Release') {
+    "FeatherNote-$appVersion-portable"
+} else {
+    "FeatherNote-$appVersion-debug"
+}
 $packageDir = Join-Path $distRoot $packageName
 
 $resolvedDist = [System.IO.Path]::GetFullPath($distRoot).TrimEnd('\') + '\'
@@ -87,4 +96,3 @@ $files = Get-ChildItem -LiteralPath $resolvedPackage -Recurse -File
 $totalBytes = ($files | Measure-Object -Property Length -Sum).Sum
 Write-Host ("便携测试包：{0}" -f $resolvedPackage)
 Write-Host ("文件：{0} 个；大小：{1:N1} MiB" -f $files.Count, ($totalBytes / 1MB))
-
