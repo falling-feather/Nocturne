@@ -1,0 +1,90 @@
+param(
+    [Parameter(Mandatory = $true)]
+    [string]$BuildDirectory,
+    [ValidateSet('Release', 'Debug')]
+    [string]$Configuration = 'Release'
+)
+
+$ErrorActionPreference = 'Stop'
+$repoRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
+$qtRoot = 'D:\msys64\ucrt64'
+$qtBin = Join-Path $qtRoot 'bin'
+$qtPlugins = Join-Path $qtRoot 'share\qt6\plugins'
+$ldd = 'D:\msys64\usr\bin\ldd.exe'
+$distRoot = Join-Path $repoRoot 'dist'
+$packageName = if ($Configuration -eq 'Release') { 'FeatherNote-0.1.0-portable' } else { 'FeatherNote-0.1.0-debug' }
+$packageDir = Join-Path $distRoot $packageName
+
+$resolvedDist = [System.IO.Path]::GetFullPath($distRoot).TrimEnd('\') + '\'
+$resolvedPackage = [System.IO.Path]::GetFullPath($packageDir)
+if (-not $resolvedPackage.StartsWith($resolvedDist, [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw "拒绝清理非 dist 目录：$resolvedPackage"
+}
+
+if (Test-Path -LiteralPath $resolvedPackage) {
+    Remove-Item -LiteralPath $resolvedPackage -Recurse -Force
+}
+New-Item -ItemType Directory -Force -Path $resolvedPackage | Out-Null
+
+$exe = Join-Path $BuildDirectory 'FeatherNote.exe'
+if (-not (Test-Path -LiteralPath $exe)) {
+    throw "找不到构建产物：$exe"
+}
+Copy-Item -LiteralPath $exe -Destination (Join-Path $resolvedPackage 'FeatherNote.exe')
+Copy-Item -LiteralPath (Join-Path $repoRoot 'packaging\qt.conf') -Destination $resolvedPackage
+
+$qtLibraries = @('Qt6Core.dll', 'Qt6Gui.dll', 'Qt6Widgets.dll', 'Qt6Sql.dll')
+foreach ($library in $qtLibraries) {
+    Copy-Item -LiteralPath (Join-Path $qtBin $library) -Destination $resolvedPackage
+}
+
+$pluginFiles = @{
+    'platforms'   = @('qwindows.dll')
+    'sqldrivers'  = @('qsqlite.dll')
+    'imageformats' = @('qgif.dll', 'qico.dll', 'qjpeg.dll')
+}
+foreach ($folder in $pluginFiles.Keys) {
+    $destination = Join-Path $resolvedPackage $folder
+    New-Item -ItemType Directory -Force -Path $destination | Out-Null
+    foreach ($plugin in $pluginFiles[$folder]) {
+        Copy-Item -LiteralPath (Join-Path (Join-Path $qtPlugins $folder) $plugin) -Destination $destination
+    }
+}
+
+if (-not (Test-Path -LiteralPath $ldd)) {
+    throw "找不到依赖扫描器：$ldd"
+}
+
+# windeployqt 的 MSYS2 构建不会复制 UCRT64 的非 Qt 依赖；递归扫描已选二进制，
+# 只把 /ucrt64/bin 中实际用到的 DLL 放入包根目录。
+$env:Path = "$resolvedPackage;$qtBin;D:\msys64\usr\bin;$env:Path"
+$scanned = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+do {
+    $copiedAny = $false
+    $binaries = Get-ChildItem -LiteralPath $resolvedPackage -Recurse -File |
+        Where-Object { $_.Extension -ieq '.dll' -or $_.Extension -ieq '.exe' }
+    foreach ($binary in $binaries) {
+        if (-not $scanned.Add($binary.FullName)) { continue }
+        $lines = & $ldd $binary.FullName 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            throw "依赖扫描失败：$($binary.FullName)`n$($lines -join [Environment]::NewLine)"
+        }
+        foreach ($line in $lines) {
+            if ($line -match '=>\s+/ucrt64/bin/([^\s]+\.dll)') {
+                $name = $Matches[1]
+                $source = Join-Path $qtBin $name
+                $destination = Join-Path $resolvedPackage $name
+                if (-not (Test-Path -LiteralPath $destination)) {
+                    Copy-Item -LiteralPath $source -Destination $destination
+                    $copiedAny = $true
+                }
+            }
+        }
+    }
+} while ($copiedAny)
+
+$files = Get-ChildItem -LiteralPath $resolvedPackage -Recurse -File
+$totalBytes = ($files | Measure-Object -Property Length -Sum).Sum
+Write-Host ("便携测试包：{0}" -f $resolvedPackage)
+Write-Host ("文件：{0} 个；大小：{1:N1} MiB" -f $files.Count, ($totalBytes / 1MB))
+
