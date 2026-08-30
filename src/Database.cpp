@@ -334,7 +334,7 @@ bool Database::open(QString *error)
 
     if (previousSchemaVersion > kSchemaVersion) {
         setError(error,
-                 QStringLiteral("数据库版本 %1 高于当前程序支持的版本 %2，请升级 FeatherNote。")
+                 QStringLiteral("数据库版本 %1 高于当前程序支持的版本 %2，请升级夜航。")
                      .arg(previousSchemaVersion)
                      .arg(kSchemaVersion));
         return false;

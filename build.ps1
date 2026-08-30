@@ -20,7 +20,7 @@ if (-not (Test-Path -LiteralPath $ninja)) {
 
 # MSYS2 Qt 的 moc 在部分 Windows 区域设置下无法向中文路径写入中间文件，
 # 因而只把临时构建目录放到纯英文的 LocalAppData；源码与最终包仍留在项目目录。
-$buildBase = Join-Path $env:LOCALAPPDATA 'FeatherNotePrototypeBuild'
+$buildBase = Join-Path $env:LOCALAPPDATA 'NocturnePrototypeBuild'
 $buildDir = Join-Path $buildBase $Configuration
 New-Item -ItemType Directory -Force -Path $buildDir | Out-Null
 
@@ -36,7 +36,7 @@ if ($LASTEXITCODE -ne 0) { throw 'CMake 配置失败。' }
 & $cmake --build $buildDir --parallel
 if ($LASTEXITCODE -ne 0) { throw 'CMake 构建失败。' }
 
-Write-Host "构建完成：$(Join-Path $buildDir 'FeatherNote.exe')"
+Write-Host "构建完成：$(Join-Path $buildDir 'Nocturne.exe')"
 
 if (-not $SkipTests) {
     & (Join-Path $qtRoot 'bin\ctest.exe') `

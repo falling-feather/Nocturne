@@ -1,9 +1,11 @@
 #include "StickyNoteWindow.h"
 
+#include "Branding.h"
 #include "Database.h"
 
 #include <QCloseEvent>
 #include <QCursor>
+#include <QFrame>
 #include <QGuiApplication>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -37,58 +39,98 @@ StickyNoteWindow::StickyNoteWindow(Database* db, QWidget* parent)
     , saveTimer_(new QTimer(this))
 {
     setObjectName(QStringLiteral("stickyNoteWindow"));
-    setWindowTitle(QStringLiteral("FeatherNote - 快速便签"));
+    setWindowTitle(QStringLiteral("快速便签"));
+    setWindowIcon(NocturneBrand::appIcon());
     setAttribute(Qt::WA_DeleteOnClose, false);
-    setMinimumSize(260, 200);
-    resize(380, 320);
+    setMinimumSize(280, 220);
+    resize(400, 340);
 
-    auto* title = new QLabel(QStringLiteral("快速便签"), this);
+    auto* header = new QFrame(this);
+    header->setObjectName(QStringLiteral("stickyHeader"));
+    auto* brandIcon = new QLabel(header);
+    brandIcon->setObjectName(QStringLiteral("stickyBrandIcon"));
+    brandIcon->setPixmap(NocturneBrand::appIcon().pixmap(26, 26));
+    brandIcon->setFixedSize(28, 28);
+    brandIcon->setAlignment(Qt::AlignCenter);
+    auto* title = new QLabel(QStringLiteral("夜航便签"), header);
     title->setObjectName(QStringLiteral("stickyTitle"));
     saveHint_->setObjectName(QStringLiteral("saveHint"));
     saveHint_->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
     saveHint_->setText(QStringLiteral("已自动保存"));
 
-    auto* heading = new QHBoxLayout;
-    heading->setContentsMargins(0, 0, 0, 0);
-    heading->setSpacing(8);
+    auto* heading = new QHBoxLayout(header);
+    heading->setContentsMargins(12, 9, 12, 9);
+    heading->setSpacing(9);
+    heading->addWidget(brandIcon);
     heading->addWidget(title);
     heading->addStretch(1);
     heading->addWidget(saveHint_);
 
     editor_->setAcceptRichText(false);
     editor_->setUndoRedoEnabled(true);
-    editor_->setPlaceholderText(QStringLiteral("随手记下灵感、待办或临时信息…"));
+    editor_->setPlaceholderText(QStringLiteral("一念入舟，随手记下…"));
     editor_->setTabChangesFocus(false);
 
+    auto* body = new QFrame(this);
+    body->setObjectName(QStringLiteral("stickyBody"));
+    auto* bodyLayout = new QVBoxLayout(body);
+    bodyLayout->setContentsMargins(12, 12, 12, 12);
+    bodyLayout->addWidget(editor_, 1);
+
     auto* layout = new QVBoxLayout(this);
-    layout->setContentsMargins(12, 10, 12, 12);
-    layout->setSpacing(7);
-    layout->addLayout(heading);
-    layout->addWidget(editor_, 1);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(0);
+    layout->addWidget(header);
+    layout->addWidget(body, 1);
 
     setStyleSheet(QStringLiteral(R"(
         QWidget#stickyNoteWindow {
-            background-color: #fff3ad;
+            background-color: #172238;
+        }
+        QFrame#stickyHeader {
+            background-color: #172238;
+            border-bottom: 1px solid #344560;
+        }
+        QFrame#stickyBody {
+            background-color: #EEE5D5;
+        }
+        QLabel#stickyBrandIcon {
+            background: transparent;
         }
         QLabel#stickyTitle {
-            color: #4b421f;
-            font-size: 13px;
-            font-weight: 600;
+            color: #F1D7A2;
+            font-size: 14px;
+            font-weight: 700;
         }
         QLabel#saveHint {
-            color: #81764d;
+            color: #9EABC0;
             font-size: 11px;
         }
         QTextEdit {
-            color: #302b19;
-            background-color: #fff9cf;
-            border: 1px solid #ddcf82;
-            border-radius: 6px;
-            padding: 7px;
-            selection-background-color: #e6c95c;
+            color: #1C2738;
+            background-color: #FBF7EE;
+            border: 1px solid #D0C3AC;
+            border-radius: 9px;
+            padding: 10px;
+            selection-background-color: #A55346;
+            selection-color: #FFF9ED;
+            font-size: 11pt;
         }
         QTextEdit:focus {
-            border-color: #bba544;
+            border-color: #A55346;
+        }
+        QScrollBar:vertical {
+            background: transparent;
+            width: 9px;
+            margin: 2px;
+        }
+        QScrollBar::handle:vertical {
+            background: #BBB09F;
+            min-height: 24px;
+            border-radius: 4px;
+        }
+        QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+            height: 0;
         }
     )"));
 

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">夜航 Nocturne 图标</title>
+  <desc id="desc">深靛圆角方窗中，月牙化作帆，一叶舟从月下经过，并以朱砂圆点收尾。</desc>
+  <rect x="24" y="24" width="464" height="464" rx="116" fill="#172238"/>
+  <circle cx="224" cy="220" r="136" fill="#F1D7A2"/>
+  <circle cx="286" cy="174" r="116" fill="#172238"/>
+  <path fill="#F1D7A2" d="M104 338c67 31 147 41 224 26 37-7 72-20 104-41-12 48-41 88-82 112-39 23-87 31-132 22-54-11-96-52-114-119z"/>
+  <path fill="#172238" d="M126 346c74 24 153 28 229 9 17-4 34-10 50-17-25 27-57 46-92 56-61 18-128 8-180-28-3-7-5-13-7-20z"/>
+  <circle cx="391" cy="306" r="19" fill="#B85C4B"/>
+</svg>

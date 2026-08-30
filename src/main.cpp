@@ -1,3 +1,4 @@
+#include "Branding.h"
 #include "Database.h"
 #include "MainWindow.h"
 
@@ -14,12 +15,17 @@ int main(int argc, char* argv[])
     const bool testProfile = app.arguments().contains(QStringLiteral("--test-profile"));
     if (testProfile)
         QStandardPaths::setTestModeEnabled(true);
+    // 保留旧内部身份，确保 V0.1.1 用户的数据库与 QSettings 原位延续。
     QApplication::setOrganizationName(QStringLiteral("FeatherNote"));
     QApplication::setOrganizationDomain(QStringLiteral("local.feathernote"));
     QApplication::setApplicationName(testProfile
         ? QStringLiteral("FeatherNoteUiSmoke")
         : QStringLiteral("FeatherNote"));
-    QApplication::setApplicationVersion(QStringLiteral(FEATHERNOTE_VERSION));
+    QApplication::setApplicationDisplayName(testProfile
+        ? QStringLiteral("Nocturne UI Smoke")
+        : NocturneBrand::englishName());
+    QApplication::setApplicationVersion(QStringLiteral(NOCTURNE_VERSION));
+    QApplication::setWindowIcon(NocturneBrand::appIcon());
     QApplication::setQuitOnLastWindowClosed(false);
 
     QFont appFont(QStringLiteral("Microsoft YaHei UI"));
@@ -34,8 +40,8 @@ int main(int argc, char* argv[])
     instanceLock.setStaleLockTime(0);
     if (!instanceLock.tryLock(100)) {
         QMessageBox::information(nullptr,
-                                 QStringLiteral("FeatherNote 已在运行"),
-                                 QStringLiteral("FeatherNote 已经在后台运行。\n"
+                                 QStringLiteral("夜航已在运行"),
+                                 QStringLiteral("夜航已经在后台运行。\n"
                                                 "请按 Ctrl+Alt+N 呼出快速便签，或从系统托盘打开主窗口。"));
         return 0;
     }
@@ -45,7 +51,7 @@ int main(int argc, char* argv[])
     if (!database.open(&error)) {
         QMessageBox::critical(nullptr,
                               QStringLiteral("无法打开本地数据"),
-                              QStringLiteral("FeatherNote 无法初始化本地数据库：\n%1").arg(error));
+                              QStringLiteral("夜航无法初始化本地数据库：\n%1").arg(error));
         return 1;
     }
 

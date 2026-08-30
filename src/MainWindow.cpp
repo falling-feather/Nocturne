@@ -1,5 +1,6 @@
 #include "MainWindow.h"
 
+#include "Branding.h"
 #include "Database.h"
 #include "NoteEditor.h"
 #include "StickyNoteWindow.h"
@@ -32,13 +33,13 @@
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
-#include <QPainter>
-#include <QPainterPath>
+#include <QPalette>
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QScrollBar>
 #include <QSettings>
 #include <QSignalBlocker>
+#include <QSize>
 #include <QStatusBar>
 #include <QSystemTrayIcon>
 #include <QTextBlock>
@@ -97,27 +98,6 @@ QByteArray htmlHash(const QString& html)
 QString plainTextExcerpt(const QString& plainText)
 {
     return plainText.simplified().left(180);
-}
-
-QIcon createAppIcon()
-{
-    QPixmap pixmap(128, 128);
-    pixmap.fill(Qt::transparent);
-    QPainter painter(&pixmap);
-    painter.setRenderHint(QPainter::Antialiasing);
-    painter.setPen(Qt::NoPen);
-    painter.setBrush(QColor(QStringLiteral("#4F6B5B")));
-    painter.drawRoundedRect(QRectF(8, 8, 112, 112), 28, 28);
-
-    QPainterPath feather;
-    feather.moveTo(38, 92);
-    feather.cubicTo(49, 58, 67, 34, 96, 27);
-    feather.cubicTo(91, 57, 70, 78, 38, 92);
-    painter.setBrush(QColor(QStringLiteral("#FFFDF7")));
-    painter.drawPath(feather);
-    painter.setPen(QPen(QColor(QStringLiteral("#D8E3DA")), 5, Qt::SolidLine, Qt::RoundCap));
-    painter.drawLine(QPointF(34, 100), QPointF(81, 46));
-    return QIcon(pixmap);
 }
 
 QString databaseErrorText(const QString& action, const QString& error)
@@ -185,10 +165,10 @@ MainWindow::MainWindow(Database* database, QWidget* parent)
 {
     m_noteCache.setMaxCost(kNoteCacheMaxKiB);
     setObjectName(QStringLiteral("mainWindow"));
-    setWindowTitle(QStringLiteral("FeatherNote · 轻羽笔记"));
-    setWindowIcon(createAppIcon());
-    resize(1220, 780);
-    setMinimumSize(980, 620);
+    setWindowTitle(NocturneBrand::chineseName());
+    setWindowIcon(NocturneBrand::appIcon());
+    resize(1280, 800);
+    setMinimumSize(1040, 640);
 
     buildUi();
     buildMenus();
@@ -234,26 +214,44 @@ void MainWindow::buildUi()
 
     auto* navigation = new QFrame(central);
     navigation->setObjectName(QStringLiteral("navigation"));
-    navigation->setFixedWidth(270);
+    navigation->setFixedWidth(282);
     auto* navigationLayout = new QVBoxLayout(navigation);
-    navigationLayout->setContentsMargins(20, 20, 20, 18);
-    navigationLayout->setSpacing(12);
+    navigationLayout->setContentsMargins(22, 22, 22, 18);
+    navigationLayout->setSpacing(11);
 
     auto* brandRow = new QHBoxLayout;
-    auto* brandIcon = new QLabel(QStringLiteral("羽"), navigation);
+    brandRow->setSpacing(12);
+    auto* brandIcon = new QLabel(navigation);
     brandIcon->setObjectName(QStringLiteral("brandIcon"));
     brandIcon->setAlignment(Qt::AlignCenter);
-    brandIcon->setFixedSize(38, 38);
-    auto* brandText = new QLabel(QStringLiteral("FeatherNote\n<small>轻羽笔记</small>"), navigation);
-    brandText->setObjectName(QStringLiteral("brandText"));
-    brandText->setTextFormat(Qt::RichText);
+    brandIcon->setFixedSize(46, 46);
+    brandIcon->setPixmap(NocturneBrand::appIcon().pixmap(QSize(46, 46)));
+    auto* brandTextLayout = new QVBoxLayout;
+    brandTextLayout->setContentsMargins(0, 0, 0, 0);
+    brandTextLayout->setSpacing(0);
+    auto* brandName = new QLabel(NocturneBrand::chineseName(), navigation);
+    brandName->setObjectName(QStringLiteral("brandName"));
+    auto* brandEnglish = new QLabel(NocturneBrand::englishName().toUpper(), navigation);
+    brandEnglish->setObjectName(QStringLiteral("brandEnglish"));
+    brandTextLayout->addWidget(brandName);
+    brandTextLayout->addWidget(brandEnglish);
     brandRow->addWidget(brandIcon);
-    brandRow->addWidget(brandText, 1);
+    brandRow->addLayout(brandTextLayout, 1);
     navigationLayout->addLayout(brandRow);
+
+    auto* brandMotto = new QLabel(NocturneBrand::motto(), navigation);
+    brandMotto->setObjectName(QStringLiteral("brandMotto"));
+    navigationLayout->addWidget(brandMotto);
+
+    auto* brandDivider = new QFrame(navigation);
+    brandDivider->setObjectName(QStringLiteral("brandDivider"));
+    brandDivider->setFrameShape(QFrame::HLine);
+    brandDivider->setFixedHeight(1);
+    navigationLayout->addWidget(brandDivider);
 
     m_searchEdit = new QLineEdit(navigation);
     m_searchEdit->setObjectName(QStringLiteral("searchEdit"));
-    m_searchEdit->setPlaceholderText(QStringLiteral("搜索标题和正文…"));
+    m_searchEdit->setPlaceholderText(QStringLiteral("寻一段文字…"));
     m_searchEdit->setClearButtonEnabled(true);
     navigationLayout->addWidget(m_searchEdit);
 
@@ -271,15 +269,16 @@ void MainWindow::buildUi()
 
     auto* noteButtonRow = new QHBoxLayout;
     noteButtonRow->setSpacing(8);
-    m_newNoteButton = new QPushButton(QStringLiteral("＋ 新建"), navigation);
+    m_newNoteButton = new QPushButton(QStringLiteral("＋ 新笺"), navigation);
     m_newNoteButton->setObjectName(QStringLiteral("primaryButton"));
     m_stickyButton = new QPushButton(QStringLiteral("便签"), navigation);
+    m_stickyButton->setObjectName(QStringLiteral("secondaryButton"));
     m_stickyButton->setToolTip(QStringLiteral("全局快捷键：Ctrl+Alt+N"));
     noteButtonRow->addWidget(m_newNoteButton, 1);
     noteButtonRow->addWidget(m_stickyButton);
     navigationLayout->addLayout(noteButtonRow);
 
-    auto* notesCaption = new QLabel(QStringLiteral("我的笔记"), navigation);
+    auto* notesCaption = new QLabel(QStringLiteral("笔记航册"), navigation);
     notesCaption->setObjectName(QStringLiteral("sectionCaption"));
     navigationLayout->addWidget(notesCaption);
 
@@ -298,12 +297,16 @@ void MainWindow::buildUi()
     auto* editorPane = new QFrame(central);
     editorPane->setObjectName(QStringLiteral("editorPane"));
     auto* editorLayout = new QVBoxLayout(editorPane);
-    editorLayout->setContentsMargins(28, 18, 22, 14);
+    editorLayout->setContentsMargins(30, 20, 26, 16);
     editorLayout->setSpacing(10);
+
+    auto* editorOverline = new QLabel(QStringLiteral("NOCTURNE  ·  当前笔记"), editorPane);
+    editorOverline->setObjectName(QStringLiteral("overlineLabel"));
+    editorLayout->addWidget(editorOverline);
 
     m_titleEdit = new QLineEdit(editorPane);
     m_titleEdit->setObjectName(QStringLiteral("titleEdit"));
-    m_titleEdit->setPlaceholderText(QStringLiteral("无标题笔记"));
+    m_titleEdit->setPlaceholderText(QStringLiteral("未题笔记"));
     editorLayout->addWidget(m_titleEdit);
 
     auto* separator = new QFrame(editorPane);
@@ -314,18 +317,21 @@ void MainWindow::buildUi()
 
     auto* toolbar = new QFrame(editorPane);
     toolbar->setObjectName(QStringLiteral("formatBar"));
-    auto* toolbarLayout = new QHBoxLayout(toolbar);
-    toolbarLayout->setContentsMargins(4, 2, 4, 2);
-    toolbarLayout->setSpacing(3);
+    auto* toolbarLayout = new QVBoxLayout(toolbar);
+    toolbarLayout->setContentsMargins(6, 4, 6, 4);
+    toolbarLayout->setSpacing(2);
+    auto* formatRow = new QHBoxLayout;
+    formatRow->setContentsMargins(0, 0, 0, 0);
+    formatRow->setSpacing(3);
 
-    auto makeToolButton = [toolbar, toolbarLayout](const QString& text, const QString& tooltip,
-                                                   bool checkable = false) {
+    auto makeToolButton = [toolbar, formatRow](const QString& text, const QString& tooltip,
+                                              bool checkable = false) {
         auto* button = new QToolButton(toolbar);
         button->setText(text);
         button->setToolTip(tooltip);
         button->setCheckable(checkable);
         button->setAutoRaise(true);
-        toolbarLayout->addWidget(button);
+        formatRow->addWidget(button);
         return button;
     };
 
@@ -343,9 +349,9 @@ void MainWindow::buildUi()
     m_underlineButton->setFont(underlineFont);
 
     auto* headingButton = makeToolButton(QStringLiteral("H1"), QStringLiteral("一级标题"));
-    auto* bodyButton = makeToolButton(QStringLiteral("正文"), QStringLiteral("恢复正文样式"));
-    auto* bulletButton = makeToolButton(QStringLiteral("• 列表"), QStringLiteral("项目符号列表"));
-    auto* numberedButton = makeToolButton(QStringLiteral("1. 列表"), QStringLiteral("编号列表"));
+    auto* bodyButton = makeToolButton(QStringLiteral("T"), QStringLiteral("恢复正文样式"));
+    auto* bulletButton = makeToolButton(QStringLiteral("•"), QStringLiteral("项目符号列表"));
+    auto* numberedButton = makeToolButton(QStringLiteral("1."), QStringLiteral("编号列表"));
     auto* colorButton = makeToolButton(QStringLiteral("A"), QStringLiteral("文字颜色"));
 
     m_fontSizeCombo = new QComboBox(toolbar);
@@ -356,22 +362,28 @@ void MainWindow::buildUi()
                                QStringLiteral("16"), QStringLiteral("20"), QStringLiteral("24"),
                                QStringLiteral("32")});
     m_fontSizeCombo->setCurrentText(QStringLiteral("12"));
-    m_fontSizeCombo->setFixedWidth(68);
-    toolbarLayout->addWidget(m_fontSizeCombo);
+    m_fontSizeCombo->setFixedWidth(62);
+    formatRow->addWidget(m_fontSizeCombo);
 
-    auto* folderLabel = new QLabel(QStringLiteral("分组"), toolbar);
+    formatRow->addStretch(1);
+    auto* imageButton = makeToolButton(QStringLiteral("图片"), QStringLiteral("插入图片，也可直接拖入或粘贴"));
+    imageButton->setObjectName(QStringLiteral("imageButton"));
+    toolbarLayout->addLayout(formatRow);
+
+    auto* organizeRow = new QHBoxLayout;
+    organizeRow->setContentsMargins(3, 0, 3, 0);
+    organizeRow->setSpacing(7);
+    auto* folderLabel = new QLabel(QStringLiteral("归入分组"), toolbar);
     folderLabel->setObjectName(QStringLiteral("mutedLabel"));
-    toolbarLayout->addWidget(folderLabel);
+    organizeRow->addWidget(folderLabel);
     m_noteFolderCombo = new QComboBox(toolbar);
     m_noteFolderCombo->setObjectName(QStringLiteral("noteFolderCombo"));
     m_noteFolderCombo->setToolTip(QStringLiteral("把当前笔记移动到分组"));
-    m_noteFolderCombo->setMinimumWidth(118);
-    m_noteFolderCombo->setMaximumWidth(170);
-    toolbarLayout->addWidget(m_noteFolderCombo);
-
-    toolbarLayout->addStretch(1);
-    auto* imageButton = makeToolButton(QStringLiteral("＋ 图片"), QStringLiteral("插入图片，也可直接拖入或粘贴"));
-    imageButton->setObjectName(QStringLiteral("imageButton"));
+    m_noteFolderCombo->setMinimumWidth(140);
+    m_noteFolderCombo->setMaximumWidth(210);
+    organizeRow->addWidget(m_noteFolderCombo);
+    organizeRow->addStretch(1);
+    toolbarLayout->addLayout(organizeRow);
     editorLayout->addWidget(toolbar);
 
     m_editor = new NoteEditor(editorPane);
@@ -386,7 +398,7 @@ void MainWindow::buildUi()
 
     auto* todoPane = new QFrame(central);
     todoPane->setObjectName(QStringLiteral("todoPane"));
-    todoPane->setFixedWidth(300);
+    todoPane->setFixedWidth(296);
     auto* todoLayout = new QVBoxLayout(todoPane);
     todoLayout->setContentsMargins(20, 24, 20, 18);
     todoLayout->setSpacing(10);
@@ -394,7 +406,7 @@ void MainWindow::buildUi()
     auto* todoTitle = new QLabel(QStringLiteral("今日待办"), todoPane);
     todoTitle->setObjectName(QStringLiteral("panelTitle"));
     todoLayout->addWidget(todoTitle);
-    auto* todoHint = new QLabel(QStringLiteral("把想法变成下一步行动"), todoPane);
+    auto* todoHint = new QLabel(QStringLiteral("把散念系成下一步行动"), todoPane);
     todoHint->setObjectName(QStringLiteral("mutedLabel"));
     todoLayout->addWidget(todoHint);
 
@@ -460,7 +472,7 @@ void MainWindow::buildMenus()
     QAction* deleteAction = fileMenu->addAction(QStringLiteral("移到回收站"));
     deleteAction->setShortcut(QKeySequence::Delete);
     fileMenu->addSeparator();
-    QAction* quitAction = fileMenu->addAction(QStringLiteral("退出 FeatherNote"));
+    QAction* quitAction = fileMenu->addAction(QStringLiteral("退出夜航"));
     quitAction->setShortcut(QKeySequence::Quit);
 
     auto* insertMenu = menuBar()->addMenu(QStringLiteral("插入(&I)"));
@@ -479,7 +491,7 @@ void MainWindow::buildMenus()
     QAction* shortcutHelp = helpMenu->addAction(QStringLiteral("快捷键说明"));
     connect(shortcutHelp, &QAction::triggered, this, [this] {
         QMessageBox::information(this,
-                                 QStringLiteral("FeatherNote 快捷键"),
+                                 QStringLiteral("夜航快捷键"),
                                  QStringLiteral("Ctrl+Alt+N　全局呼出快速便签\n"
                                                 "Ctrl+Shift+N　窗口内呼出快速便签\n"
                                                 "Ctrl+N　　　新建笔记\n"
@@ -509,10 +521,11 @@ void MainWindow::buildTray()
     if (!QSystemTrayIcon::isSystemTrayAvailable())
         return;
 
-    m_trayIcon = new QSystemTrayIcon(createAppIcon(), this);
-    m_trayIcon->setToolTip(QStringLiteral("FeatherNote · Ctrl+Alt+N 快速便签"));
+    m_trayIcon = new QSystemTrayIcon(NocturneBrand::appIcon(), this);
+    m_trayIcon->setToolTip(QStringLiteral("夜航 · Nocturne · Ctrl+Alt+N 快速便签"));
     m_trayMenu = new QMenu(this);
-    QAction* openAction = m_trayMenu->addAction(QStringLiteral("打开 FeatherNote"));
+    m_trayMenu->setObjectName(QStringLiteral("trayMenu"));
+    QAction* openAction = m_trayMenu->addAction(QStringLiteral("打开夜航"));
     QAction* stickyAction = m_trayMenu->addAction(QStringLiteral("新建快速便签　Ctrl+Alt+N"));
     m_trayMenu->addSeparator();
     QAction* quitAction = m_trayMenu->addAction(QStringLiteral("退出"));
@@ -531,62 +544,123 @@ void MainWindow::buildTray()
 
 void MainWindow::applyTheme()
 {
-    setStyleSheet(QStringLiteral(R"(
-        QMainWindow#mainWindow { background: #F7F5EF; }
-        QMenuBar { background: #F7F5EF; color: #2C332F; padding: 3px 8px; }
-        QMenuBar::item:selected { background: #E7ECE7; border-radius: 5px; }
-        QMenu { background: #FFFDF9; color: #2C332F;
-                border: 1px solid #D9DED8; padding: 6px; }
-        QMenu::item { color: #2C332F; padding: 7px 28px 7px 12px; border-radius: 4px; }
-        QMenu::item:selected { background: #E4ECE6; color: #213129; }
-        QMenu::item:disabled { color: #9AA19D; }
-        QMenu::separator { height: 1px; background: #D6D9D5; margin: 5px 8px; }
-        QFrame#navigation { background: #EDEAE1; border-right: 1px solid #DCD8CF; }
-        QLabel#brandIcon { background: #4F6B5B; color: white; border-radius: 10px;
-                           font-size: 19px; font-weight: 700; }
-        QLabel#brandText { color: #26322B; font-size: 15px; font-weight: 700; }
-        QLabel#sectionCaption { color: #4D574F; font-size: 12px; font-weight: 700; margin-top: 5px; }
-        QLabel#mutedLabel, QLabel#saveState { color: #7C847F; font-size: 11px; }
-        QLabel#panelTitle { color: #29342E; font-size: 20px; font-weight: 700; }
-        QLineEdit { background: #FFFDF9; color: #252C28; border: 1px solid #D7DCD6;
-                    border-radius: 8px; padding: 8px 10px; selection-background-color: #70917D; }
-        QLineEdit:focus { border: 1px solid #6F8F7C; }
-        QLineEdit#searchEdit { background: rgba(255,255,255,0.68); }
+    QPalette palette;
+    palette.setColor(QPalette::Window, QColor(QStringLiteral("#F6F0E4")));
+    palette.setColor(QPalette::WindowText, QColor(QStringLiteral("#1C2738")));
+    palette.setColor(QPalette::Base, QColor(QStringLiteral("#FBF7EE")));
+    palette.setColor(QPalette::AlternateBase, QColor(QStringLiteral("#EEE5D5")));
+    palette.setColor(QPalette::Text, QColor(QStringLiteral("#1C2738")));
+    palette.setColor(QPalette::Button, QColor(QStringLiteral("#F8F1E5")));
+    palette.setColor(QPalette::ButtonText, QColor(QStringLiteral("#1C2738")));
+    palette.setColor(QPalette::Highlight, QColor(QStringLiteral("#A55346")));
+    palette.setColor(QPalette::HighlightedText, QColor(QStringLiteral("#FFF9ED")));
+    palette.setColor(QPalette::Disabled, QPalette::Text, QColor(QStringLiteral("#8C8A84")));
+    palette.setColor(QPalette::Disabled, QPalette::WindowText, QColor(QStringLiteral("#8C8A84")));
+    qApp->setPalette(palette);
+
+    // 菜单与下拉框是独立顶层弹窗，必须使用应用级样式，避免系统深色
+    // 调色板把白色文字带进浅色弹窗，造成白底白字。
+    qApp->setStyleSheet(QStringLiteral(R"(
+        QWidget { color: #1C2738; selection-background-color: #A55346;
+                  selection-color: #FFF9ED; }
+        QMainWindow#mainWindow, QDialog, QMessageBox { background: #F6F0E4; }
+        QMenuBar { background: #172238; color: #E8DAB5; padding: 4px 9px; spacing: 2px; }
+        QMenuBar::item { background: transparent; color: #E8DAB5;
+                         padding: 6px 10px; border-radius: 6px; }
+        QMenuBar::item:selected, QMenuBar::item:pressed { background: #293A58; color: #FFF3D1; }
+        QMenu { background: #FBF7EE; color: #1C2738;
+                border: 1px solid #CFC2AA; padding: 7px; }
+        QMenu::item { background: transparent; color: #1C2738;
+                      padding: 8px 34px 8px 13px; border-radius: 5px; }
+        QMenu::item:selected { background: #293A58; color: #FFF7E5; }
+        QMenu::item:disabled { background: transparent; color: #8C8A84; }
+        QMenu::separator { height: 1px; background: #D8CEBC; margin: 6px 9px; }
+        QToolTip { background: #172238; color: #FFF4D5; border: 1px solid #485A78;
+                   padding: 6px 8px; }
+
+        QFrame#navigation { background: #172238; border-right: 1px solid #263753; }
+        QLabel#brandIcon { background: transparent; }
+        QLabel#brandName { color: #F1D7A2; font-size: 22px; font-weight: 700; }
+        QLabel#brandEnglish { color: #93A2BA; font-size: 9px; font-weight: 700; }
+        QLabel#brandMotto { color: #C7B68E; font-size: 11px; padding: 2px 0 5px 1px; }
+        QFrame#brandDivider { background: #31415C; border: 0; }
+        QLabel#sectionCaption { color: #D8CBA8; font-size: 12px; font-weight: 700; margin-top: 6px; }
+        QLabel#mutedLabel, QLabel#saveState { color: #7A7A76; font-size: 11px; }
+        QFrame#navigation QLabel#mutedLabel { color: #8F9CB0; }
+        QLabel#panelTitle { color: #19253A; font-size: 20px; font-weight: 700; }
+        QLabel#overlineLabel { color: #A55346; font-size: 10px; font-weight: 700; }
+
+        QLineEdit { background: #FBF7EE; color: #1C2738; border: 1px solid #D3C8B6;
+                    border-radius: 8px; padding: 8px 10px; }
+        QLineEdit:focus { border: 1px solid #A55346; }
+        QLineEdit:disabled { background: #EEE9DF; color: #8C8A84; }
+        QLineEdit#searchEdit { background: #22314B; color: #F8EAC9; border: 1px solid #394A68; }
+        QLineEdit#searchEdit:focus { border-color: #D6B979; background: #263753; }
         QLineEdit#titleEdit { background: transparent; border: 0; border-radius: 0;
-                              padding: 4px 0; font-size: 24px; font-weight: 650; color: #232A26; }
-        QPushButton { background: #FFFDF9; color: #344039; border: 1px solid #D2D8D2;
+                              padding: 2px 0 5px 0; font-size: 27px; font-weight: 650; color: #162238; }
+
+        QPushButton { background: #FBF7EE; color: #243148; border: 1px solid #D0C3AC;
                       border-radius: 8px; padding: 7px 11px; }
-        QPushButton:hover { background: #F5F8F5; border-color: #AAB8AF; }
-        QPushButton:pressed { background: #E7EEE9; }
-        QPushButton#primaryButton { background: #506E5D; color: white; border: 0; font-weight: 650; }
-        QPushButton#primaryButton:hover { background: #466454; }
-        QPushButton#roundButton { background: #506E5D; color: white; border: 0; font-size: 18px; }
-        QPushButton#quietButton { background: transparent; border: 0; color: #718078; text-align: left; }
-        QPushButton#quietButton:hover { color: #3F5E4D; }
-        QListWidget#noteList { background: transparent; color: #303934; outline: none; }
-        QListWidget#noteList::item { background: transparent; border-radius: 9px; padding: 8px 10px; }
-        QListWidget#noteList::item:selected { background: #D8E2DB; color: #213129; }
-        QListWidget#noteList::item:hover:!selected { background: rgba(255,255,255,0.55); }
-        QFrame#editorPane { background: #FFFDF9; }
-        QFrame#todoPane { background: #F3F1EA; border-left: 1px solid #E1DED6; }
-        QFrame#separator { background: #E8E5DE; border: 0; }
-        QFrame#formatBar { background: #F7F6F1; border: 1px solid #E7E5DE; border-radius: 9px; }
-        QToolButton { color: #4B5650; border: 0; border-radius: 6px; padding: 6px 8px; }
-        QToolButton:hover { background: #E7ECE8; }
-        QToolButton:checked { background: #D5E1D9; color: #2F5440; }
-        QToolButton#imageButton { background: #E2EBE5; color: #355744; font-weight: 600; }
-        QComboBox { background: #FFFDF9; border: 1px solid #D9DED9; border-radius: 6px;
-                    padding: 4px 7px; color: #3B4640; }
-        QTextEdit#noteEditor { background: #FFFDF9; color: #242B27; padding: 8px 4px;
-                               selection-background-color: #87A794; font-size: 12pt; }
-        QListWidget#todoList { background: transparent; color: #313A35; outline: none; }
-        QListWidget#todoList::item { background: #FFFDF9; border: 1px solid #E3E1DA;
-                                     border-radius: 8px; padding: 8px 8px; }
-        QListWidget#todoList::item:hover { border-color: #BCC9C0; }
+        QPushButton:hover { background: #FFF9ED; border-color: #B6A98F; }
+        QPushButton:pressed { background: #E8DECC; }
+        QPushButton:disabled { background: #ECE7DE; color: #97938B; border-color: #D9D1C4; }
+        QPushButton#primaryButton { background: #A55346; color: #FFF9ED; border: 0; font-weight: 700; }
+        QPushButton#primaryButton:hover { background: #B86151; }
+        QPushButton#secondaryButton { background: #263753; color: #EBD9A8; border-color: #40516E; }
+        QPushButton#secondaryButton:hover { background: #314563; }
+        QPushButton#roundButton { background: #A55346; color: #FFF9ED; border: 0; font-size: 18px; }
+        QPushButton#quietButton { background: transparent; border: 0; color: #716957; text-align: left; }
+        QPushButton#quietButton:hover { color: #A55346; }
+        QFrame#navigation QPushButton#quietButton { color: #AAB5C6; }
+        QFrame#navigation QPushButton#quietButton:hover { color: #F1D7A2; }
+
+        QListWidget#noteList { background: transparent; color: #D8DFE9; outline: none; }
+        QListWidget#noteList::item { background: transparent; border: 1px solid transparent;
+                                     border-radius: 9px; padding: 9px 10px; }
+        QListWidget#noteList::item:selected { background: #293A58; color: #FFF0C7; border-color: #405371; }
+        QListWidget#noteList::item:hover:!selected { background: #202F48; border-color: #30415E; }
+
+        QFrame#editorPane { background: #FBF7EE; }
+        QFrame#todoPane { background: #EEE5D5; border-left: 1px solid #D6CAB6; }
+        QFrame#separator { background: #DED4C3; border: 0; }
+        QFrame#formatBar { background: #F3ECDF; border: 1px solid #DED2BE; border-radius: 9px; }
+        QToolButton { color: #465167; border: 0; border-radius: 6px; padding: 6px 8px; }
+        QToolButton:hover { background: #E4D9C6; color: #172238; }
+        QToolButton:checked { background: #DCC9A3; color: #172238; }
+        QToolButton:disabled { color: #9B978F; }
+        QToolButton#imageButton { background: #22314B; color: #F1D7A2; font-weight: 700; }
+        QToolButton#imageButton:hover { background: #2E4160; }
+
+        QComboBox { background: #FBF7EE; color: #263148; border: 1px solid #D3C8B6;
+                    border-radius: 6px; padding: 5px 24px 5px 8px; }
+        QComboBox:focus { border-color: #A55346; }
+        QComboBox::drop-down { border: 0; width: 22px; }
+        QComboBox QAbstractItemView { background: #FBF7EE; color: #1C2738;
+                                      border: 1px solid #CFC2AA; outline: none;
+                                      selection-background-color: #293A58;
+                                      selection-color: #FFF7E5; }
+        QFrame#navigation QComboBox { background: #22314B; color: #E8DAB5; border-color: #394A68; }
+        QFrame#navigation QComboBox:focus { border-color: #D6B979; }
+
+        QTextEdit#noteEditor { background: #FBF7EE; color: #202A3A; padding: 10px 5px;
+                               selection-background-color: #B45D4E; selection-color: #FFF9ED;
+                               font-size: 12pt; }
+        QListWidget#todoList { background: transparent; color: #273248; outline: none; }
+        QListWidget#todoList::item { background: #FAF5EA; border: 1px solid #D9CEBB;
+                                     border-radius: 8px; padding: 9px 8px; }
+        QListWidget#todoList::item:hover { background: #FFF9EE; border-color: #BDAE93; }
+
         QScrollBar:vertical { background: transparent; width: 10px; margin: 2px; }
-        QScrollBar::handle:vertical { background: #C7CCC8; min-height: 28px; border-radius: 4px; }
+        QScrollBar::handle:vertical { background: #B9B1A4; min-height: 28px; border-radius: 4px; }
+        QFrame#navigation QScrollBar::handle:vertical { background: #465670; }
         QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
     )"));
+
+    if (m_searchEdit) {
+        QPalette searchPalette = m_searchEdit->palette();
+        searchPalette.setColor(QPalette::PlaceholderText, QColor(QStringLiteral("#8F9CB0")));
+        m_searchEdit->setPalette(searchPalette);
+    }
 }
 
 void MainWindow::connectSignals()
@@ -686,17 +760,18 @@ void MainWindow::ensureFirstNote()
     }
 
     const QString html = QStringLiteral(
-        "<h1>欢迎使用 FeatherNote</h1>"
-        "<p>这是第一版 <b>C++ 原生桌面原型</b>。它把常用记录能力收在一个很轻的工作流里：</p>"
+        "<h1>欢迎登上夜航</h1>"
+        "<p><i>所见所思，杂而成章。</i></p>"
+        "<p>夜航是一款 <b>C++ 原生桌面笔记原型</b>。它把常用记录能力收在一个轻巧的工作流里：</p>"
         "<ul><li>正文支持富文本、列表，以及图片拖放和粘贴；</li>"
         "<li>右侧可以快速维护日常待办；</li>"
         "<li>按 <b>Ctrl+Alt+N</b>，随时呼出置顶便签；</li>"
         "<li>输入会在短暂停顿后自动保存到本机 SQLite。</li></ul>"
         "<p>现在就删掉这段文字，记下你的第一个游戏灵感吧。</p>");
     const QString plain = QStringLiteral(
-        "欢迎使用 FeatherNote\n这是第一版 C++ 原生桌面原型。\n"
+        "欢迎登上夜航\n所见所思，杂而成章。\n这是 C++ 原生桌面笔记原型。\n"
         "正文支持富文本、列表、图片拖放和粘贴；右侧可维护待办；Ctrl+Alt+N 呼出便签。\n");
-    m_database->createNote(QStringLiteral("欢迎使用 FeatherNote"), html, plain, &error);
+    m_database->createNote(QStringLiteral("欢迎登上夜航"), html, plain, &error);
     if (!error.isEmpty())
         setStatusMessage(databaseErrorText(QStringLiteral("创建欢迎笔记失败"), error), true);
 }
@@ -1018,7 +1093,7 @@ void MainWindow::exportDocument()
     saveCurrentNote(true);
     QString suggested = m_titleEdit->text().trimmed();
     if (suggested.isEmpty())
-        suggested = QStringLiteral("FeatherNote-笔记");
+        suggested = QStringLiteral("夜航-笔记");
 
     QString selectedFilter;
     QString path = QFileDialog::getSaveFileName(
@@ -1564,7 +1639,7 @@ void MainWindow::closeEvent(QCloseEvent* event)
     hide();
     event->ignore();
     if (!m_trayHintShown) {
-        m_trayIcon->showMessage(QStringLiteral("FeatherNote 仍在后台"),
+        m_trayIcon->showMessage(QStringLiteral("夜航仍在后台"),
                                 QStringLiteral("按 Ctrl+Alt+N 可随时呼出快速便签。"),
                                 QSystemTrayIcon::Information,
                                 2500);

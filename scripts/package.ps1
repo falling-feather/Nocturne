@@ -13,14 +13,14 @@ $qtPlugins = Join-Path $qtRoot 'share\qt6\plugins'
 $ldd = 'D:\msys64\usr\bin\ldd.exe'
 $distRoot = Join-Path $repoRoot 'dist'
 $cmakeContents = Get-Content -LiteralPath (Join-Path $repoRoot 'CMakeLists.txt') -Raw
-if ($cmakeContents -notmatch 'project\s*\(FeatherNote\s+VERSION\s+([0-9]+\.[0-9]+\.[0-9]+)') {
-    throw '无法从 CMakeLists.txt 解析 FeatherNote 版本号。'
+if ($cmakeContents -notmatch 'project\s*\(Nocturne\s+VERSION\s+([0-9]+\.[0-9]+\.[0-9]+)') {
+    throw '无法从 CMakeLists.txt 解析夜航版本号。'
 }
 $appVersion = $Matches[1]
 $packageName = if ($Configuration -eq 'Release') {
-    "FeatherNote-$appVersion-portable"
+    "Nocturne-$appVersion-portable"
 } else {
-    "FeatherNote-$appVersion-debug"
+    "Nocturne-$appVersion-debug"
 }
 $packageDir = Join-Path $distRoot $packageName
 
@@ -35,11 +35,11 @@ if (Test-Path -LiteralPath $resolvedPackage) {
 }
 New-Item -ItemType Directory -Force -Path $resolvedPackage | Out-Null
 
-$exe = Join-Path $BuildDirectory 'FeatherNote.exe'
+$exe = Join-Path $BuildDirectory 'Nocturne.exe'
 if (-not (Test-Path -LiteralPath $exe)) {
     throw "找不到构建产物：$exe"
 }
-Copy-Item -LiteralPath $exe -Destination (Join-Path $resolvedPackage 'FeatherNote.exe')
+Copy-Item -LiteralPath $exe -Destination (Join-Path $resolvedPackage 'Nocturne.exe')
 Copy-Item -LiteralPath (Join-Path $repoRoot 'packaging\qt.conf') -Destination $resolvedPackage
 
 $qtLibraries = @('Qt6Core.dll', 'Qt6Gui.dll', 'Qt6Widgets.dll', 'Qt6Sql.dll')

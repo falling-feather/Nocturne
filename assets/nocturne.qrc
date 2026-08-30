@@ -1,0 +1,11 @@
+<RCC>
+  <qresource prefix="/branding">
+    <file alias="nocturne-16.png">nocturne-16.png</file>
+    <file alias="nocturne-24.png">nocturne-24.png</file>
+    <file alias="nocturne-32.png">nocturne-32.png</file>
+    <file alias="nocturne-48.png">nocturne-48.png</file>
+    <file alias="nocturne-64.png">nocturne-64.png</file>
+    <file alias="nocturne-128.png">nocturne-128.png</file>
+    <file alias="nocturne-256.png">nocturne-256.png</file>
+  </qresource>
+</RCC>
