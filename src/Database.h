@@ -87,6 +87,9 @@ public:
 
     std::optional<NoteRecord> stickyNote(QString *error = nullptr) const;
     qint64 saveStickyNote(const QString &text, QString *error = nullptr);
+    qint64 saveStickyNote(qint64 id,
+                          const QString &text,
+                          QString *error = nullptr);
 
     QList<TodoRecord> listTodos(QString *error = nullptr) const;
     qint64 createTodo(const QString &text, QString *error = nullptr);

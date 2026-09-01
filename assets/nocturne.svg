@@ -1,11 +1,59 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
-  <title id="title">夜航 Nocturne 图标</title>
-  <desc id="desc">深靛圆角方窗中，月牙化作帆，一叶舟从月下经过，并以朱砂圆点收尾。</desc>
-  <rect x="24" y="24" width="464" height="464" rx="116" fill="#172238"/>
-  <circle cx="224" cy="220" r="136" fill="#F1D7A2"/>
-  <circle cx="286" cy="174" r="116" fill="#172238"/>
-  <path fill="#F1D7A2" d="M104 338c67 31 147 41 224 26 37-7 72-20 104-41-12 48-41 88-82 112-39 23-87 31-132 22-54-11-96-52-114-119z"/>
-  <path fill="#172238" d="M126 346c74 24 153 28 229 9 17-4 34-10 50-17-25 27-57 46-92 56-61 18-128 8-180-28-3-7-5-13-7-20z"/>
-  <circle cx="391" cy="306" r="19" fill="#B85C4B"/>
+  <title id="title">夜航 Nocturne 正式图标</title>
+  <desc id="desc">金色弦月映照墨色孤舟，舟中旅人戴笠夜行，桅杆悬一面朱旗。</desc>
+  <defs>
+    <linearGradient id="moonGold" x1="92" y1="78" x2="344" y2="395" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#F8DEA0"/>
+      <stop offset="0.48" stop-color="#EBC576"/>
+      <stop offset="1" stop-color="#F4D58E"/>
+    </linearGradient>
+    <linearGradient id="inkNavy" x1="118" y1="310" x2="391" y2="439" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#102647"/>
+      <stop offset="1" stop-color="#07182F"/>
+    </linearGradient>
+    <linearGradient id="cinnabar" x1="244" y1="169" x2="304" y2="200" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#C85A43"/>
+      <stop offset="1" stop-color="#A74336"/>
+    </linearGradient>
+  </defs>
+
+  <!-- 用户确认的主体：开口向右的金月。内圈上移，留下如帆般的下弦。 -->
+  <path fill="url(#moonGold)" fill-rule="evenodd" d="
+    M220 43
+    C317 43 396 122 396 219
+    C396 316 317 395 220 395
+    C123 395 44 316 44 219
+    C44 122 123 43 220 43 Z
+
+    M275 63
+    C355 63 420 128 420 208
+    C420 288 355 353 275 353
+    C195 353 130 288 130 208
+    C130 128 195 63 275 63 Z"/>
+
+  <!-- 略带手作不规则的桅杆与横桁。 -->
+  <path fill="url(#inkNavy)" d="M233 365 C237 301 238 226 235 148 C235 139 240 134 244 140 C249 148 247 257 248 365 Z"/>
+  <path fill="url(#inkNavy)" d="M222 155 C236 159 251 161 267 162 C252 166 238 165 224 162 Z"/>
+  <path fill="url(#cinnabar)" d="M246 169 C263 161 271 174 284 180 C294 184 304 183 315 180 C302 195 286 205 271 201 C262 198 254 190 246 194 Z"/>
+
+  <!-- 斗笠旅人：保留远观时也能辨认的坐姿轮廓。 -->
+  <path fill="url(#inkNavy)" d="M348 296 L371 280 L394 302 L374 305 L360 307 Z"/>
+  <path fill="url(#inkNavy)" d="M362 306 C376 311 380 325 379 340 C379 352 387 359 401 365 C384 371 364 373 345 369 C342 352 343 337 348 323 C351 315 355 309 362 306 Z"/>
+  <path fill="url(#inkNavy)" d="M376 351 C388 356 400 365 410 375 L395 379 C386 370 376 362 366 358 Z"/>
+
+  <!-- 墨舟主轮廓，左端以分叉笔锋收起，右端形成昂起舟首。 -->
+  <path fill="url(#inkNavy)" d="
+    M52 337
+    C119 367 198 377 279 370
+    C346 365 407 346 465 311
+    C449 354 419 390 379 414
+    C329 444 267 458 205 451
+    C142 444 87 413 53 369
+    C67 376 83 380 100 382
+    C82 369 65 354 52 337 Z"/>
+  <path fill="none" stroke="#102647" stroke-width="6" stroke-linecap="round" d="M65 365 C117 402 172 421 233 427"/>
+  <path fill="none" stroke="#102647" stroke-width="4" stroke-linecap="round" d="M42 345 C63 358 82 366 104 370"/>
+  <path fill="none" stroke="#102647" stroke-width="3" stroke-linecap="round" d="M48 356 C73 375 94 385 124 391"/>
+  <path fill="none" stroke="#102647" stroke-width="3" stroke-linecap="round" d="M132 445 C184 465 249 470 309 458"/>
 </svg>

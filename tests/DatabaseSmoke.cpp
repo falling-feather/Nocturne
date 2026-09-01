@@ -111,6 +111,7 @@ int main(int argc, char* argv[])
 
     qint64 editedNoteId = 0;
     qint64 stickyId = 0;
+    qint64 secondStickyId = 0;
     {
         Database database;
         QString error;
@@ -205,6 +206,28 @@ int main(int argc, char* argv[])
         ok &= check(database.saveQuickNote(QStringLiteral("兼容接口第三版"), &error),
                     "compatibility quick-note writer uses note table");
 
+        secondStickyId = database.saveStickyNote(
+            0, QStringLiteral("第二枚独立便签"), &error);
+        if (secondStickyId <= 0)
+            std::cerr << "FAIL detail: second sticky save: "
+                      << error.toStdString() << '\n';
+        ok &= check(secondStickyId > 0 && secondStickyId != stickyId,
+                    "a second sticky creates an independent note row");
+        ok &= check(database.saveStickyNote(
+                        secondStickyId,
+                        QStringLiteral("第二枚便签的独立修改"),
+                        &error) == secondStickyId,
+                    "sticky updates target the requested row");
+        const auto firstStickyAfterSecondSave = database.note(stickyId, &error);
+        const auto secondStickyAfterSave = database.note(secondStickyId, &error);
+        ok &= check(firstStickyAfterSecondSave.has_value()
+                        && firstStickyAfterSecondSave->plainText
+                            == QStringLiteral("兼容接口第三版")
+                        && secondStickyAfterSave.has_value()
+                        && secondStickyAfterSave->plainText
+                            == QStringLiteral("第二枚便签的独立修改"),
+                    "saving one sticky leaves the other unchanged");
+
         const qint64 todoId = database.createTodo(QStringLiteral("画概念图"), &error);
         ok &= check(todoId > 0, "todo creates");
         ok &= check(database.updateTodoDone(todoId, true, &error), "todo completes");
@@ -227,6 +250,12 @@ int main(int argc, char* argv[])
                         && sticky->id == stickyId
                         && sticky->plainText == QStringLiteral("兼容接口第三版"),
                     "sticky note survives restart");
+        const auto secondSticky = reopened.note(secondStickyId, &error);
+        ok &= check(secondSticky.has_value()
+                        && secondSticky->kind == QStringLiteral("sticky")
+                        && secondSticky->plainText
+                            == QStringLiteral("第二枚便签的独立修改"),
+                    "multiple sticky notes survive restart independently");
         ok &= check(reopened.listFolders(&error).isEmpty(),
                     "deleted folder stays deleted after restart");
         ok &= check(reopened.listTodos(&error).size() == 1,

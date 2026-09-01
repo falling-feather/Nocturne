@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(Nocturne VERSION 0.1.2 LANGUAGES CXX)
+project(Nocturne VERSION 0.1.3 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -22,8 +22,12 @@ qt_add_executable(Nocturne WIN32
     src/MainWindow.cpp
     src/NoteEditor.h
     src/NoteEditor.cpp
+    src/NocturneStyle.h
+    src/NocturneStyle.cpp
     src/StickyNoteWindow.h
     src/StickyNoteWindow.cpp
+    src/WindowChrome.h
+    src/WindowChrome.cpp
     assets/nocturne.qrc
 )
 
@@ -71,4 +75,47 @@ if(BUILD_TESTING)
     target_include_directories(NocturnePersistenceTest PRIVATE src)
     target_link_libraries(NocturnePersistenceTest PRIVATE Qt6::Sql)
     add_test(NAME persistence_smoke COMMAND NocturnePersistenceTest)
+
+    qt_add_executable(NocturnePerformanceTest
+        tests/DatabasePerformance.cpp
+        src/Database.h
+        src/Database.cpp
+    )
+    target_include_directories(NocturnePerformanceTest PRIVATE src)
+    target_link_libraries(NocturnePerformanceTest PRIVATE Qt6::Sql)
+    add_test(NAME performance_smoke COMMAND NocturnePerformanceTest)
+    set_tests_properties(performance_smoke PROPERTIES TIMEOUT 120)
+
+    qt_add_executable(NocturneDesktopUiTest
+        tests/DesktopUiSmoke.cpp
+        src/Branding.h
+        src/Branding.cpp
+        src/Database.h
+        src/Database.cpp
+        src/MainWindow.h
+        src/MainWindow.cpp
+        src/NoteEditor.h
+        src/NoteEditor.cpp
+        src/NocturneStyle.h
+        src/NocturneStyle.cpp
+        src/StickyNoteWindow.h
+        src/StickyNoteWindow.cpp
+        src/WindowChrome.h
+        src/WindowChrome.cpp
+        assets/nocturne.qrc
+    )
+    target_include_directories(NocturneDesktopUiTest PRIVATE src)
+    target_link_libraries(NocturneDesktopUiTest PRIVATE Qt6::Widgets Qt6::Sql)
+    if(WIN32)
+        target_link_libraries(NocturneDesktopUiTest PRIVATE user32)
+        target_compile_definitions(NocturneDesktopUiTest PRIVATE
+            WIN32_LEAN_AND_MEAN
+            NOMINMAX
+            UNICODE
+            _UNICODE
+        )
+    endif()
+    add_test(NAME desktop_ui_smoke
+             COMMAND NocturneDesktopUiTest "${CMAKE_CURRENT_BINARY_DIR}/ui-smoke")
+    set_tests_properties(desktop_ui_smoke PROPERTIES TIMEOUT 60 RUN_SERIAL TRUE)
 endif()

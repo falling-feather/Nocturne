@@ -6,6 +6,7 @@ $assetRoot = Join-Path $repoRoot 'assets'
 $svgPath = Join-Path $assetRoot 'nocturne.svg'
 $renderer = 'D:\msys64\ucrt64\bin\rsvg-convert.exe'
 $sizes = @(16, 24, 32, 48, 64, 128, 256)
+$docImageRoot = Join-Path $repoRoot 'doc\image'
 
 if (-not (Test-Path -LiteralPath $renderer)) {
     throw "找不到 SVG 渲染器：$renderer"
@@ -25,6 +26,13 @@ foreach ($size in $sizes) {
         Size = $size
         Bytes = [System.IO.File]::ReadAllBytes($pngPath)
     }
+}
+
+New-Item -ItemType Directory -Path $docImageRoot -Force | Out-Null
+$conceptPath = Join-Path $docImageRoot 'Nocturne-icon-concept.png'
+& $renderer --width 1024 --height 1024 --output $conceptPath $svgPath
+if ($LASTEXITCODE -ne 0) {
+    throw '生成文档图标预览失败。'
 }
 
 $icoPath = Join-Path $assetRoot 'nocturne.ico'
@@ -61,3 +69,4 @@ finally {
 }
 
 Write-Host "品牌图标已生成：$icoPath"
+Write-Host "文档预览已生成：$conceptPath"

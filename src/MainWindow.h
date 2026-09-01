@@ -3,6 +3,7 @@
 #include "Database.h"
 
 #include <QCache>
+#include <QList>
 #include <QMainWindow>
 
 class GlobalHotkey;
@@ -12,12 +13,14 @@ class StickyNoteWindow;
 class QAction;
 class QCloseEvent;
 class QComboBox;
+class QEvent;
 class QImage;
 class QLabel;
 class QLineEdit;
 class QListWidget;
 class QListWidgetItem;
 class QMenu;
+class QMenuBar;
 class QPoint;
 class QPushButton;
 class QSystemTrayIcon;
@@ -33,7 +36,9 @@ public:
     ~MainWindow() override;
 
 protected:
+    void changeEvent(QEvent* event) override;
     void closeEvent(QCloseEvent* event) override;
+    bool nativeEvent(const QByteArray& eventType, void* message, qintptr* result) override;
 
 private:
     void buildUi();
@@ -83,10 +88,16 @@ private:
     void cacheNote(const NoteRecord& note);
     int summaryRevision(qint64 noteId) const;
     void selectCurrentFolderInEditor();
+    void suspendHeavyContent();
+    void resumeHeavyContent();
 
+    StickyNoteWindow* openSticky(qint64 noteId = 0, bool activate = true);
+    void restorePinnedStickies();
     void summonSticky();
     void showMainWindow();
     void requestQuit();
+    void toggleMaximized();
+    void updateWindowChrome();
     void updateFormatControls();
     void setStatusMessage(const QString& message, bool warning = false);
 
@@ -103,9 +114,13 @@ private:
     bool m_dirty = false;
     bool m_quitting = false;
     bool m_trayHintShown = false;
+    bool m_contentSuspended = false;
+    bool m_resumeQueued = false;
 
     QCache<qint64, NoteRecord> m_noteCache;
 
+    QMenuBar* m_appMenuBar = nullptr;
+    QToolButton* m_maximizeButton = nullptr;
     QListWidget* m_noteList = nullptr;
     QLineEdit* m_searchEdit = nullptr;
     QComboBox* m_folderFilter = nullptr;
@@ -129,7 +144,7 @@ private:
 
     QTimer* m_saveTimer = nullptr;
     QTimer* m_searchTimer = nullptr;
-    StickyNoteWindow* m_stickyWindow = nullptr;
+    QList<StickyNoteWindow*> m_stickyWindows;
     QSystemTrayIcon* m_trayIcon = nullptr;
     QMenu* m_trayMenu = nullptr;
     GlobalHotkey* m_globalHotkey = nullptr;

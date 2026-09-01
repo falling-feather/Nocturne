@@ -26,12 +26,15 @@ QString motto()
 
 QIcon appIcon()
 {
-    QIcon icon;
-    const int sizes[] = {16, 24, 32, 48, 64, 128, 256};
-    for (const int size : sizes) {
-        icon.addFile(QStringLiteral(":/branding/nocturne-%1.png").arg(size),
-                     QSize(size, size));
-    }
+    static const QIcon icon = [] {
+        QIcon cached;
+        const int sizes[] = {16, 24, 32, 48, 64, 128, 256};
+        for (const int size : sizes) {
+            cached.addFile(QStringLiteral(":/branding/nocturne-%1.png").arg(size),
+                           QSize(size, size));
+        }
+        return cached;
+    }();
     return icon;
 }
 

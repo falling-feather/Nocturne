@@ -16,7 +16,7 @@
 
 namespace {
 
-constexpr int kSchemaVersion = 2;
+constexpr int kSchemaVersion = 3;
 constexpr int kExcerptLength = 180;
 
 void clearError(QString *error)
@@ -331,6 +331,7 @@ bool Database::open(QString *error)
     int previousSchemaVersion = 0;
     if (pragma.exec(QStringLiteral("PRAGMA user_version")) && pragma.next())
         previousSchemaVersion = pragma.value(0).toInt();
+    pragma.finish();
 
     if (previousSchemaVersion > kSchemaVersion) {
         setError(error,
@@ -417,9 +418,6 @@ bool Database::open(QString *error)
                 "CREATE INDEX IF NOT EXISTS idx_notes_folder_active_updated "
                 "ON notes(folder_id, deleted_at, updated_at DESC, id DESC)"),
             QStringLiteral(
-                "CREATE UNIQUE INDEX IF NOT EXISTS idx_notes_single_sticky "
-                "ON notes(kind) WHERE kind = 'sticky' AND deleted_at IS NULL"),
-            QStringLiteral(
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_folders_parent_name "
                 "ON folders(COALESCE(parent_id, 0), name COLLATE NOCASE)"),
             QStringLiteral(
@@ -435,6 +433,15 @@ bool Database::open(QString *error)
                 database.rollback();
                 return false;
             }
+        }
+
+        // schema v2 limited the database to one active sticky. Multiple desktop
+        // sticky windows share the same notes table in v3, so remove that guard.
+        if (!executeSchemaStatement(database,
+                                    QStringLiteral("DROP INDEX IF EXISTS idx_notes_single_sticky"),
+                                    error)) {
+            database.rollback();
+            return false;
         }
 
         QSqlQuery normalize(database);
@@ -1034,7 +1041,7 @@ qint64 Database::saveStickyNote(const QString &text, QString *error)
 {
     clearError(error);
     QSqlDatabase database = openedDatabase(connectionName_, error);
-    if (!database.isValid() || !beginTransaction(database, error))
+    if (!database.isValid())
         return -1;
 
     qint64 id = 0;
@@ -1043,12 +1050,21 @@ qint64 Database::saveStickyNote(const QString &text, QString *error)
             "SELECT id FROM notes WHERE kind = 'sticky' "
             "AND deleted_at IS NULL ORDER BY id LIMIT 1"))) {
         setError(error, queryError(QStringLiteral("查找快捷便签失败"), lookup));
-        database.rollback();
         return -1;
     }
     if (lookup.next())
         id = lookup.value(0).toLongLong();
     lookup.finish();
+
+    return saveStickyNote(id, text, error);
+}
+
+qint64 Database::saveStickyNote(qint64 id, const QString &text, QString *error)
+{
+    clearError(error);
+    QSqlDatabase database = openedDatabase(connectionName_, error);
+    if (!database.isValid() || !beginTransaction(database, error))
+        return -1;
 
     if (id <= 0 && text.trimmed().isEmpty()) {
         if (!commitTransaction(database, error))
@@ -1067,7 +1083,7 @@ qint64 Database::saveStickyNote(const QString &text, QString *error)
             "excerpt = :excerpt, body_revision = CASE WHEN content_hash = :old_hash "
             "THEN body_revision ELSE body_revision + 1 END, "
             "content_hash = :content_hash, updated_at = :updated_at "
-            "WHERE id = :id AND deleted_at IS NULL"));
+            "WHERE id = :id AND kind = 'sticky' AND deleted_at IS NULL"));
         update.bindValue(QStringLiteral(":html"), html);
         update.bindValue(QStringLiteral(":plain_text"), nonNullText(text));
         update.bindValue(QStringLiteral(":excerpt"), noteExcerpt(text));

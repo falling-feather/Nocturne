@@ -3,7 +3,9 @@
 #include "Branding.h"
 #include "Database.h"
 #include "NoteEditor.h"
+#include "NocturneStyle.h"
 #include "StickyNoteWindow.h"
+#include "WindowChrome.h"
 
 #include <QAbstractNativeEventFilter>
 #include <QAction>
@@ -16,6 +18,7 @@
 #include <QCryptographicHash>
 #include <QDateTime>
 #include <QDir>
+#include <QEvent>
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -160,7 +163,7 @@ private:
 };
 
 MainWindow::MainWindow(Database* database, QWidget* parent)
-    : QMainWindow(parent)
+    : QMainWindow(parent, Qt::Window | Qt::FramelessWindowHint)
     , m_database(database)
 {
     m_noteCache.setMaxCost(kNoteCacheMaxKiB);
@@ -175,12 +178,6 @@ MainWindow::MainWindow(Database* database, QWidget* parent)
     applyTheme();
     connectSignals();
 
-    m_stickyWindow = new StickyNoteWindow(m_database);
-    connect(m_stickyWindow, &StickyNoteWindow::noteSaved, this,
-            [this](qint64 noteId) {
-                m_noteCache.remove(noteId);
-                refreshNotes(noteId == m_currentNoteId ? noteId : m_currentNoteId);
-            });
     buildTray();
     restoreWindowState();
 
@@ -193,13 +190,16 @@ MainWindow::MainWindow(Database* database, QWidget* parent)
     ensureFirstNote();
     refreshNotes();
     refreshTodos();
+    QTimer::singleShot(0, this, &MainWindow::restorePinnedStickies);
 }
 
 MainWindow::~MainWindow()
 {
     saveCurrentNote(true);
-    if (m_stickyWindow)
-        m_stickyWindow->flushSave();
+    for (StickyNoteWindow* window : m_stickyWindows) {
+        if (window)
+            window->flushSave();
+    }
 
     QSettings settings;
     settings.setValue(QStringLiteral("main/geometry"), saveGeometry());
@@ -207,40 +207,87 @@ MainWindow::~MainWindow()
 
 void MainWindow::buildUi()
 {
-    auto* central = new QWidget(this);
-    auto* rootLayout = new QHBoxLayout(central);
+    auto* central = new NocturneBackdrop(this);
+    central->setObjectName(QStringLiteral("windowShell"));
+    auto* shellLayout = new QVBoxLayout(central);
+    shellLayout->setContentsMargins(0, 0, 0, 0);
+    shellLayout->setSpacing(0);
+
+    auto* titleBar = new WindowDragArea(central, true);
+    titleBar->setObjectName(QStringLiteral("appTitleBar"));
+    titleBar->setFixedHeight(58);
+    auto* titleLayout = new QHBoxLayout(titleBar);
+    titleLayout->setContentsMargins(18, 0, 0, 0);
+    titleLayout->setSpacing(10);
+
+    auto* titleIcon = new QLabel(titleBar);
+    titleIcon->setObjectName(QStringLiteral("titleBrandIcon"));
+    titleIcon->setFixedSize(34, 34);
+    titleIcon->setAlignment(Qt::AlignCenter);
+    titleIcon->setPixmap(NocturneBrand::appIcon().pixmap(QSize(33, 33)));
+    auto* titleName = new QLabel(NocturneBrand::chineseName(), titleBar);
+    titleName->setObjectName(QStringLiteral("titleBrandName"));
+    QFont titleBrandFont(NocturneUi::serifFamily(), 15);
+    titleBrandFont.setWeight(QFont::DemiBold);
+    titleName->setFont(titleBrandFont);
+    auto* titleEnglish = new QLabel(NocturneBrand::englishName().toUpper(), titleBar);
+    titleEnglish->setObjectName(QStringLiteral("titleBrandEnglish"));
+
+    m_appMenuBar = new QMenuBar(titleBar);
+    m_appMenuBar->setObjectName(QStringLiteral("appMenuBar"));
+    m_appMenuBar->setNativeMenuBar(false);
+    m_appMenuBar->setProperty("windowChromeInteractive", true);
+
+    auto makeWindowButton = [titleBar](const QString& text,
+                                       const QString& objectName,
+                                       const QString& tooltip) {
+        auto* button = new QToolButton(titleBar);
+        button->setText(text);
+        button->setObjectName(objectName);
+        button->setToolTip(tooltip);
+        button->setAutoRaise(true);
+        button->setFocusPolicy(Qt::NoFocus);
+        button->setFixedSize(48, 58);
+        button->setProperty("windowChromeInteractive", true);
+        return button;
+    };
+    auto* minimizeButton = makeWindowButton(QStringLiteral("−"),
+                                            QStringLiteral("windowMinimizeButton"),
+                                            QStringLiteral("最小化"));
+    m_maximizeButton = makeWindowButton(QStringLiteral("□"),
+                                        QStringLiteral("windowMaximizeButton"),
+                                        QStringLiteral("最大化"));
+    auto* closeButton = makeWindowButton(QStringLiteral("×"),
+                                         QStringLiteral("windowCloseButton"),
+                                         QStringLiteral("关闭到系统托盘"));
+
+    titleLayout->addWidget(titleIcon);
+    titleLayout->addWidget(titleName);
+    titleLayout->addWidget(titleEnglish);
+    titleLayout->addSpacing(14);
+    titleLayout->addWidget(m_appMenuBar);
+    titleLayout->addStretch(1);
+    titleLayout->addWidget(minimizeButton);
+    titleLayout->addWidget(m_maximizeButton);
+    titleLayout->addWidget(closeButton);
+    shellLayout->addWidget(titleBar);
+
+    auto* content = new QFrame(central);
+    content->setObjectName(QStringLiteral("appContent"));
+    auto* rootLayout = new QHBoxLayout(content);
     rootLayout->setContentsMargins(0, 0, 0, 0);
     rootLayout->setSpacing(0);
 
-    auto* navigation = new QFrame(central);
+    auto* navigation = new NocturneGlassPanel(false, content);
     navigation->setObjectName(QStringLiteral("navigation"));
-    navigation->setFixedWidth(282);
+    navigation->setFixedWidth(286);
     auto* navigationLayout = new QVBoxLayout(navigation);
-    navigationLayout->setContentsMargins(22, 22, 22, 18);
-    navigationLayout->setSpacing(11);
-
-    auto* brandRow = new QHBoxLayout;
-    brandRow->setSpacing(12);
-    auto* brandIcon = new QLabel(navigation);
-    brandIcon->setObjectName(QStringLiteral("brandIcon"));
-    brandIcon->setAlignment(Qt::AlignCenter);
-    brandIcon->setFixedSize(46, 46);
-    brandIcon->setPixmap(NocturneBrand::appIcon().pixmap(QSize(46, 46)));
-    auto* brandTextLayout = new QVBoxLayout;
-    brandTextLayout->setContentsMargins(0, 0, 0, 0);
-    brandTextLayout->setSpacing(0);
-    auto* brandName = new QLabel(NocturneBrand::chineseName(), navigation);
-    brandName->setObjectName(QStringLiteral("brandName"));
-    auto* brandEnglish = new QLabel(NocturneBrand::englishName().toUpper(), navigation);
-    brandEnglish->setObjectName(QStringLiteral("brandEnglish"));
-    brandTextLayout->addWidget(brandName);
-    brandTextLayout->addWidget(brandEnglish);
-    brandRow->addWidget(brandIcon);
-    brandRow->addLayout(brandTextLayout, 1);
-    navigationLayout->addLayout(brandRow);
+    navigationLayout->setContentsMargins(20, 21, 20, 15);
+    navigationLayout->setSpacing(10);
 
     auto* brandMotto = new QLabel(NocturneBrand::motto(), navigation);
     brandMotto->setObjectName(QStringLiteral("brandMotto"));
+    brandMotto->setFont(QFont(NocturneUi::serifFamily(), 10));
     navigationLayout->addWidget(brandMotto);
 
     auto* brandDivider = new QFrame(navigation);
@@ -253,6 +300,7 @@ void MainWindow::buildUi()
     m_searchEdit->setObjectName(QStringLiteral("searchEdit"));
     m_searchEdit->setPlaceholderText(QStringLiteral("寻一段文字…"));
     m_searchEdit->setClearButtonEnabled(true);
+    m_searchEdit->setMinimumHeight(42);
     navigationLayout->addWidget(m_searchEdit);
 
     auto* folderFilterRow = new QHBoxLayout;
@@ -269,10 +317,12 @@ void MainWindow::buildUi()
 
     auto* noteButtonRow = new QHBoxLayout;
     noteButtonRow->setSpacing(8);
-    m_newNoteButton = new QPushButton(QStringLiteral("＋ 新笺"), navigation);
+    m_newNoteButton = new QPushButton(QStringLiteral("＋  新笺"), navigation);
     m_newNoteButton->setObjectName(QStringLiteral("primaryButton"));
+    m_newNoteButton->setMinimumHeight(40);
     m_stickyButton = new QPushButton(QStringLiteral("便签"), navigation);
     m_stickyButton->setObjectName(QStringLiteral("secondaryButton"));
+    m_stickyButton->setMinimumHeight(40);
     m_stickyButton->setToolTip(QStringLiteral("全局快捷键：Ctrl+Alt+N"));
     noteButtonRow->addWidget(m_newNoteButton, 1);
     noteButtonRow->addWidget(m_stickyButton);
@@ -280,12 +330,16 @@ void MainWindow::buildUi()
 
     auto* notesCaption = new QLabel(QStringLiteral("笔记航册"), navigation);
     notesCaption->setObjectName(QStringLiteral("sectionCaption"));
+    notesCaption->setFont(QFont(NocturneUi::serifFamily(), 12));
     navigationLayout->addWidget(notesCaption);
 
     m_noteList = new QListWidget(navigation);
     m_noteList->setObjectName(QStringLiteral("noteList"));
     m_noteList->setFrameShape(QFrame::NoFrame);
-    m_noteList->setSpacing(4);
+    m_noteList->setSpacing(0);
+    m_noteList->setUniformItemSizes(true);
+    m_noteList->setMouseTracking(true);
+    m_noteList->setItemDelegate(new NocturneNoteDelegate(m_noteList));
     m_noteList->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     m_noteList->setContextMenuPolicy(Qt::CustomContextMenu);
     navigationLayout->addWidget(m_noteList, 1);
@@ -294,19 +348,18 @@ void MainWindow::buildUi()
     m_noteCountLabel->setObjectName(QStringLiteral("mutedLabel"));
     navigationLayout->addWidget(m_noteCountLabel);
 
-    auto* editorPane = new QFrame(central);
+    auto* editorPane = new NocturnePaperPanel(content);
     editorPane->setObjectName(QStringLiteral("editorPane"));
     auto* editorLayout = new QVBoxLayout(editorPane);
-    editorLayout->setContentsMargins(30, 20, 26, 16);
-    editorLayout->setSpacing(10);
-
-    auto* editorOverline = new QLabel(QStringLiteral("NOCTURNE  ·  当前笔记"), editorPane);
-    editorOverline->setObjectName(QStringLiteral("overlineLabel"));
-    editorLayout->addWidget(editorOverline);
+    editorLayout->setContentsMargins(40, 31, 38, 20);
+    editorLayout->setSpacing(12);
 
     m_titleEdit = new QLineEdit(editorPane);
     m_titleEdit->setObjectName(QStringLiteral("titleEdit"));
     m_titleEdit->setPlaceholderText(QStringLiteral("未题笔记"));
+    QFont editorTitleFont(NocturneUi::serifFamily(), 25);
+    editorTitleFont.setWeight(QFont::DemiBold);
+    m_titleEdit->setFont(editorTitleFont);
     editorLayout->addWidget(m_titleEdit);
 
     auto* separator = new QFrame(editorPane);
@@ -317,12 +370,10 @@ void MainWindow::buildUi()
 
     auto* toolbar = new QFrame(editorPane);
     toolbar->setObjectName(QStringLiteral("formatBar"));
-    auto* toolbarLayout = new QVBoxLayout(toolbar);
-    toolbarLayout->setContentsMargins(6, 4, 6, 4);
-    toolbarLayout->setSpacing(2);
-    auto* formatRow = new QHBoxLayout;
-    formatRow->setContentsMargins(0, 0, 0, 0);
-    formatRow->setSpacing(3);
+    toolbar->setMinimumHeight(44);
+    auto* formatRow = new QHBoxLayout(toolbar);
+    formatRow->setContentsMargins(7, 4, 7, 4);
+    formatRow->setSpacing(2);
 
     auto makeToolButton = [toolbar, formatRow](const QString& text, const QString& tooltip,
                                               bool checkable = false) {
@@ -331,8 +382,19 @@ void MainWindow::buildUi()
         button->setToolTip(tooltip);
         button->setCheckable(checkable);
         button->setAutoRaise(true);
+        button->setFixedSize(31, 31);
         formatRow->addWidget(button);
         return button;
+    };
+
+    auto addToolSeparator = [toolbar, formatRow] {
+        auto* line = new QFrame(toolbar);
+        line->setObjectName(QStringLiteral("toolSeparator"));
+        line->setFrameShape(QFrame::VLine);
+        line->setFixedSize(1, 20);
+        formatRow->addSpacing(3);
+        formatRow->addWidget(line);
+        formatRow->addSpacing(3);
     };
 
     m_boldButton = makeToolButton(QStringLiteral("B"), QStringLiteral("粗体 (Ctrl+B)"), true);
@@ -348,9 +410,11 @@ void MainWindow::buildUi()
     underlineFont.setUnderline(true);
     m_underlineButton->setFont(underlineFont);
 
+    addToolSeparator();
     auto* headingButton = makeToolButton(QStringLiteral("H1"), QStringLiteral("一级标题"));
-    auto* bodyButton = makeToolButton(QStringLiteral("T"), QStringLiteral("恢复正文样式"));
-    auto* bulletButton = makeToolButton(QStringLiteral("•"), QStringLiteral("项目符号列表"));
+    auto* bodyButton = makeToolButton(QStringLiteral("¶"), QStringLiteral("恢复正文样式"));
+    addToolSeparator();
+    auto* bulletButton = makeToolButton(QStringLiteral("•≡"), QStringLiteral("项目符号列表"));
     auto* numberedButton = makeToolButton(QStringLiteral("1."), QStringLiteral("编号列表"));
     auto* colorButton = makeToolButton(QStringLiteral("A"), QStringLiteral("文字颜色"));
 
@@ -362,33 +426,25 @@ void MainWindow::buildUi()
                                QStringLiteral("16"), QStringLiteral("20"), QStringLiteral("24"),
                                QStringLiteral("32")});
     m_fontSizeCombo->setCurrentText(QStringLiteral("12"));
-    m_fontSizeCombo->setFixedWidth(62);
+    m_fontSizeCombo->setFixedWidth(56);
     formatRow->addWidget(m_fontSizeCombo);
 
-    formatRow->addStretch(1);
-    auto* imageButton = makeToolButton(QStringLiteral("图片"), QStringLiteral("插入图片，也可直接拖入或粘贴"));
+    addToolSeparator();
+    auto* imageButton = makeToolButton(QStringLiteral("▧"), QStringLiteral("插入图片，也可直接拖入或粘贴"));
     imageButton->setObjectName(QStringLiteral("imageButton"));
-    toolbarLayout->addLayout(formatRow);
 
-    auto* organizeRow = new QHBoxLayout;
-    organizeRow->setContentsMargins(3, 0, 3, 0);
-    organizeRow->setSpacing(7);
-    auto* folderLabel = new QLabel(QStringLiteral("归入分组"), toolbar);
-    folderLabel->setObjectName(QStringLiteral("mutedLabel"));
-    organizeRow->addWidget(folderLabel);
+    formatRow->addStretch(1);
     m_noteFolderCombo = new QComboBox(toolbar);
     m_noteFolderCombo->setObjectName(QStringLiteral("noteFolderCombo"));
     m_noteFolderCombo->setToolTip(QStringLiteral("把当前笔记移动到分组"));
-    m_noteFolderCombo->setMinimumWidth(140);
-    m_noteFolderCombo->setMaximumWidth(210);
-    organizeRow->addWidget(m_noteFolderCombo);
-    organizeRow->addStretch(1);
-    toolbarLayout->addLayout(organizeRow);
+    m_noteFolderCombo->setFixedWidth(142);
+    formatRow->addWidget(m_noteFolderCombo);
     editorLayout->addWidget(toolbar);
 
     m_editor = new NoteEditor(editorPane);
     m_editor->setObjectName(QStringLiteral("noteEditor"));
     m_editor->setFrameShape(QFrame::NoFrame);
+    m_editor->setFont(QFont(NocturneUi::sansFamily(), 11));
     editorLayout->addWidget(m_editor, 1);
 
     m_saveStateLabel = new QLabel(QStringLiteral("就绪"), editorPane);
@@ -396,15 +452,18 @@ void MainWindow::buildUi()
     m_saveStateLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
     editorLayout->addWidget(m_saveStateLabel);
 
-    auto* todoPane = new QFrame(central);
+    auto* todoPane = new NocturneGlassPanel(true, content);
     todoPane->setObjectName(QStringLiteral("todoPane"));
-    todoPane->setFixedWidth(296);
+    todoPane->setFixedWidth(302);
     auto* todoLayout = new QVBoxLayout(todoPane);
-    todoLayout->setContentsMargins(20, 24, 20, 18);
-    todoLayout->setSpacing(10);
+    todoLayout->setContentsMargins(21, 25, 21, 17);
+    todoLayout->setSpacing(9);
 
     auto* todoTitle = new QLabel(QStringLiteral("今日待办"), todoPane);
     todoTitle->setObjectName(QStringLiteral("panelTitle"));
+    QFont todoTitleFont(NocturneUi::serifFamily(), 20);
+    todoTitleFont.setWeight(QFont::DemiBold);
+    todoTitle->setFont(todoTitleFont);
     todoLayout->addWidget(todoTitle);
     auto* todoHint = new QLabel(QStringLiteral("把散念系成下一步行动"), todoPane);
     todoHint->setObjectName(QStringLiteral("mutedLabel"));
@@ -417,7 +476,7 @@ void MainWindow::buildUi()
     m_todoInput->setPlaceholderText(QStringLiteral("添加一项待办…"));
     auto* addTodoButton = new QPushButton(QStringLiteral("＋"), todoPane);
     addTodoButton->setObjectName(QStringLiteral("roundButton"));
-    addTodoButton->setFixedWidth(38);
+    addTodoButton->setFixedSize(42, 42);
     todoInputRow->addWidget(m_todoInput, 1);
     todoInputRow->addWidget(addTodoButton);
     todoLayout->addLayout(todoInputRow);
@@ -425,7 +484,9 @@ void MainWindow::buildUi()
     m_todoList = new QListWidget(todoPane);
     m_todoList->setObjectName(QStringLiteral("todoList"));
     m_todoList->setFrameShape(QFrame::NoFrame);
-    m_todoList->setSpacing(5);
+    m_todoList->setSpacing(0);
+    m_todoList->setMouseTracking(true);
+    m_todoList->setItemDelegate(new NocturneTodoDelegate(m_todoList));
     todoLayout->addWidget(m_todoList, 1);
 
     m_todoSummaryLabel = new QLabel(todoPane);
@@ -438,6 +499,7 @@ void MainWindow::buildUi()
     rootLayout->addWidget(navigation);
     rootLayout->addWidget(editorPane, 1);
     rootLayout->addWidget(todoPane);
+    shellLayout->addWidget(content, 1);
     setCentralWidget(central);
 
     m_saveTimer = new QTimer(this);
@@ -455,11 +517,15 @@ void MainWindow::buildUi()
     connect(imageButton, &QToolButton::clicked, this, &MainWindow::chooseImages);
     connect(addTodoButton, &QPushButton::clicked, this, &MainWindow::addTodo);
     connect(clearTodoButton, &QPushButton::clicked, this, &MainWindow::clearCompletedTodos);
+    connect(minimizeButton, &QToolButton::clicked, this, &MainWindow::showMinimized);
+    connect(m_maximizeButton, &QToolButton::clicked, this, &MainWindow::toggleMaximized);
+    connect(closeButton, &QToolButton::clicked, this, &MainWindow::close);
+    updateWindowChrome();
 }
 
 void MainWindow::buildMenus()
 {
-    auto* fileMenu = menuBar()->addMenu(QStringLiteral("文件(&F)"));
+    auto* fileMenu = m_appMenuBar->addMenu(QStringLiteral("文件(&F)"));
     QAction* newAction = fileMenu->addAction(QStringLiteral("新建笔记"));
     newAction->setShortcut(QKeySequence::New);
     QAction* importAction = fileMenu->addAction(QStringLiteral("导入文档…"));
@@ -475,25 +541,25 @@ void MainWindow::buildMenus()
     QAction* quitAction = fileMenu->addAction(QStringLiteral("退出夜航"));
     quitAction->setShortcut(QKeySequence::Quit);
 
-    auto* insertMenu = menuBar()->addMenu(QStringLiteral("插入(&I)"));
+    auto* insertMenu = m_appMenuBar->addMenu(QStringLiteral("插入(&I)"));
     QAction* imageAction = insertMenu->addAction(QStringLiteral("图片…"));
     imageAction->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+I")));
-    QAction* stickyAction = insertMenu->addAction(QStringLiteral("呼出快速便签"));
+    QAction* stickyAction = insertMenu->addAction(QStringLiteral("新建桌面便签"));
     stickyAction->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+N")));
 
-    auto* manageMenu = menuBar()->addMenu(QStringLiteral("管理(&M)"));
+    auto* manageMenu = m_appMenuBar->addMenu(QStringLiteral("管理(&M)"));
     QAction* newFolderAction = manageMenu->addAction(QStringLiteral("新建分组…"));
     newFolderAction->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+G")));
     QAction* renameFolderAction = manageMenu->addAction(QStringLiteral("重命名当前分组…"));
     QAction* deleteFolderAction = manageMenu->addAction(QStringLiteral("删除当前分组…"));
 
-    auto* helpMenu = menuBar()->addMenu(QStringLiteral("帮助(&H)"));
+    auto* helpMenu = m_appMenuBar->addMenu(QStringLiteral("帮助(&H)"));
     QAction* shortcutHelp = helpMenu->addAction(QStringLiteral("快捷键说明"));
     connect(shortcutHelp, &QAction::triggered, this, [this] {
         QMessageBox::information(this,
                                  QStringLiteral("夜航快捷键"),
-                                 QStringLiteral("Ctrl+Alt+N　全局呼出快速便签\n"
-                                                "Ctrl+Shift+N　窗口内呼出快速便签\n"
+                                 QStringLiteral("Ctrl+Alt+N　全局新建桌面便签\n"
+                                                "Ctrl+Shift+N　窗口内新建桌面便签\n"
                                                 "Ctrl+N　　　新建笔记\n"
                                                 "Ctrl+O　　　导入文档\n"
                                                 "Ctrl+Shift+I　插入图片\n"
@@ -522,11 +588,11 @@ void MainWindow::buildTray()
         return;
 
     m_trayIcon = new QSystemTrayIcon(NocturneBrand::appIcon(), this);
-    m_trayIcon->setToolTip(QStringLiteral("夜航 · Nocturne · Ctrl+Alt+N 快速便签"));
+    m_trayIcon->setToolTip(QStringLiteral("夜航 · Nocturne · Ctrl+Alt+N 新建桌面便签"));
     m_trayMenu = new QMenu(this);
     m_trayMenu->setObjectName(QStringLiteral("trayMenu"));
     QAction* openAction = m_trayMenu->addAction(QStringLiteral("打开夜航"));
-    QAction* stickyAction = m_trayMenu->addAction(QStringLiteral("新建快速便签　Ctrl+Alt+N"));
+    QAction* stickyAction = m_trayMenu->addAction(QStringLiteral("新建桌面便签　Ctrl+Alt+N"));
     m_trayMenu->addSeparator();
     QAction* quitAction = m_trayMenu->addAction(QStringLiteral("退出"));
     m_trayIcon->setContextMenu(m_trayMenu);
@@ -545,121 +611,175 @@ void MainWindow::buildTray()
 void MainWindow::applyTheme()
 {
     QPalette palette;
-    palette.setColor(QPalette::Window, QColor(QStringLiteral("#F6F0E4")));
-    palette.setColor(QPalette::WindowText, QColor(QStringLiteral("#1C2738")));
-    palette.setColor(QPalette::Base, QColor(QStringLiteral("#FBF7EE")));
-    palette.setColor(QPalette::AlternateBase, QColor(QStringLiteral("#EEE5D5")));
-    palette.setColor(QPalette::Text, QColor(QStringLiteral("#1C2738")));
-    palette.setColor(QPalette::Button, QColor(QStringLiteral("#F8F1E5")));
-    palette.setColor(QPalette::ButtonText, QColor(QStringLiteral("#1C2738")));
-    palette.setColor(QPalette::Highlight, QColor(QStringLiteral("#A55346")));
-    palette.setColor(QPalette::HighlightedText, QColor(QStringLiteral("#FFF9ED")));
-    palette.setColor(QPalette::Disabled, QPalette::Text, QColor(QStringLiteral("#8C8A84")));
-    palette.setColor(QPalette::Disabled, QPalette::WindowText, QColor(QStringLiteral("#8C8A84")));
+    palette.setColor(QPalette::Window, QColor(QStringLiteral("#071422")));
+    palette.setColor(QPalette::WindowText, QColor(QStringLiteral("#E8D9B7")));
+    palette.setColor(QPalette::Base, QColor(QStringLiteral("#F6E8CB")));
+    palette.setColor(QPalette::AlternateBase, QColor(QStringLiteral("#EED9B5")));
+    palette.setColor(QPalette::Text, QColor(QStringLiteral("#263244")));
+    palette.setColor(QPalette::Button, QColor(QStringLiteral("#F3E2C3")));
+    palette.setColor(QPalette::ButtonText, QColor(QStringLiteral("#243248")));
+    palette.setColor(QPalette::Highlight, QColor(QStringLiteral("#A84E3D")));
+    palette.setColor(QPalette::HighlightedText, QColor(QStringLiteral("#FFF5DE")));
+    palette.setColor(QPalette::Disabled, QPalette::Text, QColor(QStringLiteral("#8C887D")));
+    palette.setColor(QPalette::Disabled, QPalette::WindowText, QColor(QStringLiteral("#8C887D")));
     qApp->setPalette(palette);
+    qApp->setFont(QFont(NocturneUi::sansFamily(), 10));
 
-    // 菜单与下拉框是独立顶层弹窗，必须使用应用级样式，避免系统深色
-    // 调色板把白色文字带进浅色弹窗，造成白底白字。
+    // Menus and combo popups are separate top-level windows. Give every text and
+    // background state an explicit color so Windows dark mode cannot recreate the
+    // former white-on-white prompt bug.
     qApp->setStyleSheet(QStringLiteral(R"(
-        QWidget { color: #1C2738; selection-background-color: #A55346;
-                  selection-color: #FFF9ED; }
-        QMainWindow#mainWindow, QDialog, QMessageBox { background: #F6F0E4; }
-        QMenuBar { background: #172238; color: #E8DAB5; padding: 4px 9px; spacing: 2px; }
-        QMenuBar::item { background: transparent; color: #E8DAB5;
-                         padding: 6px 10px; border-radius: 6px; }
-        QMenuBar::item:selected, QMenuBar::item:pressed { background: #293A58; color: #FFF3D1; }
-        QMenu { background: #FBF7EE; color: #1C2738;
-                border: 1px solid #CFC2AA; padding: 7px; }
-        QMenu::item { background: transparent; color: #1C2738;
-                      padding: 8px 34px 8px 13px; border-radius: 5px; }
-        QMenu::item:selected { background: #293A58; color: #FFF7E5; }
-        QMenu::item:disabled { background: transparent; color: #8C8A84; }
-        QMenu::separator { height: 1px; background: #D8CEBC; margin: 6px 9px; }
-        QToolTip { background: #172238; color: #FFF4D5; border: 1px solid #485A78;
+        QWidget { font-family: "%1"; selection-background-color: #A84E3D;
+                  selection-color: #FFF4DA; }
+        QMainWindow#mainWindow { background: #071422; }
+        QWidget#windowShell, QFrame#appContent { background: transparent; }
+        QDialog, QMessageBox { background: #F5E7CD; color: #253144; }
+
+        QFrame#appTitleBar {
+            background: rgba(4, 16, 30, 218);
+            border-bottom: 1px solid rgba(220, 186, 115, 62);
+        }
+        QLabel#titleBrandIcon, QLabel#brandIcon { background: transparent; border: 0; }
+        QLabel#titleBrandName { color: #F0CD86; }
+        QLabel#titleBrandEnglish { color: #9BA9BA; font-size: 9px; font-weight: 700; letter-spacing: 1px; }
+        QMenuBar { background: transparent; color: #E4D1AA; padding: 0; spacing: 2px; }
+        QMenuBar#appMenuBar { background: transparent; padding: 0; }
+        QMenuBar::item { background: transparent; color: #E4D1AA;
+                         padding: 8px 12px; border-radius: 0; }
+        QMenuBar::item:selected, QMenuBar::item:pressed {
+            background: rgba(86, 111, 133, 92); color: #FFF0C7;
+        }
+        QMenu { background: #0C2034; color: #E8D7B5;
+                border: 1px solid #4A5662; padding: 4px; }
+        QMenu::item { background: transparent; color: #E8D7B5;
+                      padding: 8px 34px 8px 13px; border-radius: 0; }
+        QMenu::item:selected { background: #A24C3C; color: #FFF5DE; }
+        QMenu::item:disabled { background: transparent; color: #6F7C8A; }
+        QMenu::separator { height: 1px; background: #34475A; margin: 6px 9px; }
+        QToolTip { background: #0B1D31; color: #F5DFC0; border: 1px solid #5B6570;
                    padding: 6px 8px; }
 
-        QFrame#navigation { background: #172238; border-right: 1px solid #263753; }
-        QLabel#brandIcon { background: transparent; }
-        QLabel#brandName { color: #F1D7A2; font-size: 22px; font-weight: 700; }
-        QLabel#brandEnglish { color: #93A2BA; font-size: 9px; font-weight: 700; }
-        QLabel#brandMotto { color: #C7B68E; font-size: 11px; padding: 2px 0 5px 1px; }
-        QFrame#brandDivider { background: #31415C; border: 0; }
-        QLabel#sectionCaption { color: #D8CBA8; font-size: 12px; font-weight: 700; margin-top: 6px; }
-        QLabel#mutedLabel, QLabel#saveState { color: #7A7A76; font-size: 11px; }
-        QFrame#navigation QLabel#mutedLabel { color: #8F9CB0; }
-        QLabel#panelTitle { color: #19253A; font-size: 20px; font-weight: 700; }
-        QLabel#overlineLabel { color: #A55346; font-size: 10px; font-weight: 700; }
+        QFrame#navigation, QFrame#editorPane, QFrame#todoPane { background: transparent; border: 0; }
+        QLabel#brandName { color: #F1CE85; }
+        QLabel#brandEnglish { color: #91A0B2; font-size: 9px; font-weight: 700; letter-spacing: 1px; }
+        QLabel#brandMotto { color: #CCB98F; padding: 1px 0 5px 1px; }
+        QFrame#brandDivider { background: rgba(205, 178, 119, 52); border: 0; }
+        QLabel#sectionCaption { color: #DCC28A; font-weight: 600; margin-top: 4px; }
+        QLabel#mutedLabel { color: #766E61; font-size: 10px; }
+        QFrame#navigation QLabel#mutedLabel, QFrame#todoPane QLabel#mutedLabel {
+            color: #92A0AE;
+        }
+        QLabel#panelTitle { color: #F0CF8A; }
+        QLabel#saveState { color: #756B5C; font-size: 10px; }
 
-        QLineEdit { background: #FBF7EE; color: #1C2738; border: 1px solid #D3C8B6;
-                    border-radius: 8px; padding: 8px 10px; }
-        QLineEdit:focus { border: 1px solid #A55346; }
-        QLineEdit:disabled { background: #EEE9DF; color: #8C8A84; }
-        QLineEdit#searchEdit { background: #22314B; color: #F8EAC9; border: 1px solid #394A68; }
-        QLineEdit#searchEdit:focus { border-color: #D6B979; background: #263753; }
+        QLineEdit { background: #F3E4CA; color: #243147;
+                    border: 0; border-bottom: 1px solid rgba(137, 105, 66, 118);
+                    border-radius: 0; padding: 8px 10px; }
+        QLineEdit:focus { border-bottom: 2px solid #A84E3D; }
+        QLineEdit:disabled { background: #E9DDC7; color: #8C877C; }
+        QLineEdit#searchEdit, QLineEdit#todoInput {
+            background: rgba(17, 39, 58, 210); color: #F0E0BD;
+            border: 0; border-bottom: 1px solid rgba(198, 170, 111, 118);
+            padding: 8px 10px;
+        }
+        QLineEdit#searchEdit:focus, QLineEdit#todoInput:focus {
+            background: rgba(23, 47, 68, 230); border-bottom: 2px solid #D5B66F;
+        }
         QLineEdit#titleEdit { background: transparent; border: 0; border-radius: 0;
-                              padding: 2px 0 5px 0; font-size: 27px; font-weight: 650; color: #162238; }
+                              padding: 0 0 5px 0; color: #252B30; }
 
-        QPushButton { background: #FBF7EE; color: #243148; border: 1px solid #D0C3AC;
-                      border-radius: 8px; padding: 7px 11px; }
-        QPushButton:hover { background: #FFF9ED; border-color: #B6A98F; }
-        QPushButton:pressed { background: #E8DECC; }
-        QPushButton:disabled { background: #ECE7DE; color: #97938B; border-color: #D9D1C4; }
-        QPushButton#primaryButton { background: #A55346; color: #FFF9ED; border: 0; font-weight: 700; }
-        QPushButton#primaryButton:hover { background: #B86151; }
-        QPushButton#secondaryButton { background: #263753; color: #EBD9A8; border-color: #40516E; }
-        QPushButton#secondaryButton:hover { background: #314563; }
-        QPushButton#roundButton { background: #A55346; color: #FFF9ED; border: 0; font-size: 18px; }
-        QPushButton#quietButton { background: transparent; border: 0; color: #716957; text-align: left; }
-        QPushButton#quietButton:hover { color: #A55346; }
-        QFrame#navigation QPushButton#quietButton { color: #AAB5C6; }
-        QFrame#navigation QPushButton#quietButton:hover { color: #F1D7A2; }
+        QPushButton { background: #F0DFC1; color: #263248;
+                      border: 1px solid rgba(128, 96, 58, 92);
+                      border-radius: 1px; padding: 7px 11px; }
+        QPushButton:hover { background: #FFF0D2; border-color: #A98555; }
+        QPushButton:pressed { background: #E6D2AE; }
+        QPushButton:disabled { background: #E6DBC7; color: #928C82; border-color: #CEC0A9; }
+        QPushButton#primaryButton {
+            background: #9F493B;
+            color: #FFF1D3; border: 1px solid rgba(224, 174, 112, 82); font-weight: 650;
+        }
+        QPushButton#primaryButton:hover { background: #B55A45; border-color: #D6B16F; }
+        QPushButton#secondaryButton { background: rgba(21, 43, 63, 210); color: #E2C68A;
+                                      border-color: rgba(210, 179, 113, 80); }
+        QPushButton#secondaryButton:hover { background: rgba(38, 66, 87, 230); border-color: #CDAE6D; }
+        QPushButton#roundButton { background: #A74E3D; color: #FFF1D4; border: 0;
+                                  border-radius: 0; font-size: 19px; }
+        QPushButton#roundButton:hover { background: #B85A45; }
+        QPushButton#quietButton { background: transparent; border: 0; color: #7C6E57; text-align: left; }
+        QPushButton#quietButton:hover { color: #A84E3D; }
+        QFrame#navigation QPushButton#quietButton, QFrame#todoPane QPushButton#quietButton {
+            color: #AEB9C2;
+        }
+        QFrame#navigation QPushButton#quietButton:hover, QFrame#todoPane QPushButton#quietButton:hover {
+            color: #F0CF89;
+        }
 
-        QListWidget#noteList { background: transparent; color: #D8DFE9; outline: none; }
-        QListWidget#noteList::item { background: transparent; border: 1px solid transparent;
-                                     border-radius: 9px; padding: 9px 10px; }
-        QListWidget#noteList::item:selected { background: #293A58; color: #FFF0C7; border-color: #405371; }
-        QListWidget#noteList::item:hover:!selected { background: #202F48; border-color: #30415E; }
+        QListWidget#noteList, QListWidget#todoList {
+            background: transparent; color: #DFD7C2; border: 0; outline: none;
+        }
+        QListWidget#noteList::item, QListWidget#todoList::item {
+            background: transparent; border: 0; padding: 0;
+        }
 
-        QFrame#editorPane { background: #FBF7EE; }
-        QFrame#todoPane { background: #EEE5D5; border-left: 1px solid #D6CAB6; }
-        QFrame#separator { background: #DED4C3; border: 0; }
-        QFrame#formatBar { background: #F3ECDF; border: 1px solid #DED2BE; border-radius: 9px; }
-        QToolButton { color: #465167; border: 0; border-radius: 6px; padding: 6px 8px; }
-        QToolButton:hover { background: #E4D9C6; color: #172238; }
-        QToolButton:checked { background: #DCC9A3; color: #172238; }
-        QToolButton:disabled { color: #9B978F; }
-        QToolButton#imageButton { background: #22314B; color: #F1D7A2; font-weight: 700; }
-        QToolButton#imageButton:hover { background: #2E4160; }
+        QFrame#separator { background: rgba(126, 88, 47, 66); border: 0; }
+        QFrame#formatBar { background: rgba(229, 210, 177, 70);
+                           border: 0; border-top: 1px solid rgba(123, 87, 49, 62);
+                           border-bottom: 1px solid rgba(123, 87, 49, 62);
+                           border-radius: 0; }
+        QFrame#toolSeparator { background: rgba(111, 81, 47, 58); border: 0; }
+        QToolButton { color: #4B4D4D; background: transparent; border: 0;
+                      border-radius: 0; padding: 0; }
+        QToolButton:hover { background: rgba(188, 155, 101, 72); color: #1D2B3B; }
+        QToolButton:checked { background: rgba(183, 137, 75, 112); color: #15263A; }
+        QToolButton:disabled { color: #A49A8A; }
+        QToolButton#imageButton { color: #9F473A; font-size: 17px; font-weight: 700; }
+        QToolButton#imageButton:hover { background: rgba(168, 78, 61, 40); color: #8E3E34; }
+        QToolButton#windowMinimizeButton, QToolButton#windowMaximizeButton,
+        QToolButton#windowCloseButton { background: transparent; color: #D2D9DE; border: 0;
+                                        border-radius: 0; padding: 0; font-size: 17px; }
+        QToolButton#windowMinimizeButton:hover, QToolButton#windowMaximizeButton:hover {
+            background: rgba(70, 96, 118, 100); color: #FFF0C7;
+        }
+        QToolButton#windowCloseButton:hover { background: #A74842; color: #FFFFFF; }
+        QToolButton#windowMinimizeButton:pressed, QToolButton#windowMaximizeButton:pressed {
+            background: rgba(85, 111, 132, 150);
+        }
+        QToolButton#windowCloseButton:pressed { background: #83342F; }
 
-        QComboBox { background: #FBF7EE; color: #263148; border: 1px solid #D3C8B6;
-                    border-radius: 6px; padding: 5px 24px 5px 8px; }
-        QComboBox:focus { border-color: #A55346; }
-        QComboBox::drop-down { border: 0; width: 22px; }
-        QComboBox QAbstractItemView { background: #FBF7EE; color: #1C2738;
-                                      border: 1px solid #CFC2AA; outline: none;
-                                      selection-background-color: #293A58;
-                                      selection-color: #FFF7E5; }
-        QFrame#navigation QComboBox { background: #22314B; color: #E8DAB5; border-color: #394A68; }
-        QFrame#navigation QComboBox:focus { border-color: #D6B979; }
+        QComboBox { background: rgba(246, 231, 202, 220); color: #293347;
+                    border: 0; border-bottom: 1px solid rgba(127, 94, 54, 96); border-radius: 0;
+                    padding: 5px 22px 5px 8px; }
+        QComboBox:focus { border-bottom: 2px solid #A84E3D; }
+        QComboBox::drop-down { border: 0; width: 20px; }
+        QComboBox QAbstractItemView { background: #0C2034; color: #E8D7B5;
+                                      border: 1px solid #4A5662; outline: none;
+                                      selection-background-color: #A24C3C;
+                                      selection-color: #FFF5DE; }
+        QFrame#navigation QComboBox { background: rgba(20, 41, 61, 214); color: #E5D3AE;
+                                      border-bottom: 1px solid rgba(198, 169, 108, 90); }
+        QFrame#navigation QComboBox:focus { border-bottom: 2px solid #D5B66F; }
 
-        QTextEdit#noteEditor { background: #FBF7EE; color: #202A3A; padding: 10px 5px;
-                               selection-background-color: #B45D4E; selection-color: #FFF9ED;
-                               font-size: 12pt; }
-        QListWidget#todoList { background: transparent; color: #273248; outline: none; }
-        QListWidget#todoList::item { background: #FAF5EA; border: 1px solid #D9CEBB;
-                                     border-radius: 8px; padding: 9px 8px; }
-        QListWidget#todoList::item:hover { background: #FFF9EE; border-color: #BDAE93; }
+        QTextEdit#noteEditor { background: #F4E8D0; color: #303339; border: 0;
+                               padding: 8px 3px; selection-background-color: #A84E3D;
+                               selection-color: #FFF4DA; font-size: 11pt; line-height: 1.55; }
 
-        QScrollBar:vertical { background: transparent; width: 10px; margin: 2px; }
-        QScrollBar::handle:vertical { background: #B9B1A4; min-height: 28px; border-radius: 4px; }
-        QFrame#navigation QScrollBar::handle:vertical { background: #465670; }
+        QScrollBar:vertical { background: transparent; width: 9px; margin: 2px; }
+        QScrollBar::handle:vertical { background: rgba(116, 93, 62, 92);
+                                      min-height: 28px; border-radius: 0; }
+        QFrame#navigation QScrollBar::handle:vertical,
+        QFrame#todoPane QScrollBar::handle:vertical { background: rgba(126, 147, 164, 90); }
         QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
-    )"));
+    )").arg(NocturneUi::sansFamily()));
 
     if (m_searchEdit) {
         QPalette searchPalette = m_searchEdit->palette();
-        searchPalette.setColor(QPalette::PlaceholderText, QColor(QStringLiteral("#8F9CB0")));
+        searchPalette.setColor(QPalette::PlaceholderText, QColor(QStringLiteral("#8F9EAC")));
         m_searchEdit->setPalette(searchPalette);
+    }
+    if (m_todoInput) {
+        QPalette todoPalette = m_todoInput->palette();
+        todoPalette.setColor(QPalette::PlaceholderText, QColor(QStringLiteral("#8F9EAC")));
+        m_todoInput->setPalette(todoPalette);
     }
 }
 
@@ -794,6 +914,16 @@ void MainWindow::refreshNotes(qint64 preferredId)
     int selectedRow = -1;
     for (int index = 0; index < notes.size(); ++index) {
         const NoteSummary& note = notes.at(index);
+        const QString safeTitle = note.title.trimmed().isEmpty()
+            ? QStringLiteral("无标题笔记")
+            : note.title.trimmed();
+        const int folderIndex = m_noteFolderCombo->findData(note.folderId);
+        const QString groupName = folderIndex >= 0
+            ? m_noteFolderCombo->itemText(folderIndex)
+            : QStringLiteral("未分组");
+        const QString time = note.updatedAt.isValid()
+            ? note.updatedAt.toLocalTime().toString(QStringLiteral("MM-dd  HH:mm"))
+            : QStringLiteral("刚刚");
         auto* item = new QListWidgetItem(
             noteListText(note.title, note.excerpt, note.kind, note.updatedAt), m_noteList);
         item->setData(Qt::UserRole, note.id);
@@ -801,7 +931,12 @@ void MainWindow::refreshNotes(qint64 preferredId)
         item->setData(Qt::UserRole + 2, note.contentHash);
         item->setData(Qt::UserRole + 3, note.folderId);
         item->setData(Qt::UserRole + 4, note.kind);
-        item->setSizeHint(QSize(0, 76));
+        item->setData(NocturneUi::NoteTitleRole, safeTitle);
+        item->setData(NocturneUi::NoteExcerptRole, note.excerpt);
+        item->setData(NocturneUi::NoteGroupRole, groupName);
+        item->setData(NocturneUi::NoteTimeRole, time);
+        item->setData(NocturneUi::NoteKindRole, note.kind);
+        item->setSizeHint(QSize(0, 80));
         if (note.id == preferredId || (preferredId < 0 && note.id == m_currentNoteId))
             selectedRow = index;
     }
@@ -948,6 +1083,15 @@ bool MainWindow::saveCurrentNote(bool force)
             item->setData(Qt::UserRole + 2, cached.contentHash);
             item->setData(Qt::UserRole + 3, cached.folderId);
             item->setData(Qt::UserRole + 4, cached.kind);
+            const int folderIndex = m_noteFolderCombo->findData(cached.folderId);
+            item->setData(NocturneUi::NoteTitleRole, title);
+            item->setData(NocturneUi::NoteExcerptRole, cached.excerpt);
+            item->setData(NocturneUi::NoteGroupRole,
+                          folderIndex >= 0 ? m_noteFolderCombo->itemText(folderIndex)
+                                           : QStringLiteral("未分组"));
+            item->setData(NocturneUi::NoteTimeRole,
+                          updatedAt.toLocalTime().toString(QStringLiteral("MM-dd  HH:mm")));
+            item->setData(NocturneUi::NoteKindRole, cached.kind);
             break;
         }
     }
@@ -1004,10 +1148,17 @@ void MainWindow::showNoteContextMenu(const QPoint& position)
     m_noteList->setCurrentItem(item);
 
     QMenu menu(this);
+    QAction* openStickyAction = nullptr;
+    if (item->data(Qt::UserRole + 4).toString() == QStringLiteral("sticky")) {
+        openStickyAction = menu.addAction(QStringLiteral("在桌面打开"));
+        menu.addSeparator();
+    }
     QAction* renameAction = menu.addAction(QStringLiteral("重命名"));
     QAction* deleteAction = menu.addAction(QStringLiteral("移到回收站"));
     QAction* selected = menu.exec(m_noteList->viewport()->mapToGlobal(position));
-    if (selected == renameAction)
+    if (openStickyAction && selected == openStickyAction)
+        openSticky(item->data(Qt::UserRole).toLongLong());
+    else if (selected == renameAction)
         renameCurrentNote();
     else if (selected == deleteAction)
         deleteCurrentNote();
@@ -1570,33 +1721,130 @@ void MainWindow::selectCurrentFolderInEditor()
     m_noteFolderCombo->setCurrentIndex(index);
 }
 
-void MainWindow::summonSticky()
+void MainWindow::suspendHeavyContent()
+{
+    if (m_contentSuspended || m_quitting || !m_editor)
+        return;
+    if (!saveCurrentNote(true))
+        return;
+
+    m_saveTimer->stop();
+    m_noteCache.clear();
+    m_loadingNote = true;
+    m_editor->clear();
+    m_editor->document()->clearUndoRedoStacks();
+    m_editor->document()->setModified(false);
+    m_loadingNote = false;
+    m_contentSuspended = true;
+}
+
+void MainWindow::resumeHeavyContent()
+{
+    if (!m_contentSuspended)
+        return;
+    m_contentSuspended = false;
+    if (m_currentNoteId > 0)
+        loadNote(m_currentNoteId);
+}
+
+StickyNoteWindow* MainWindow::openSticky(qint64 noteId, bool activate)
 {
     saveCurrentNote(true);
-    if (m_stickyWindow) {
-        m_stickyWindow->reloadFromDatabase();
-        m_stickyWindow->summon();
+
+    if (noteId > 0) {
+        for (StickyNoteWindow* window : m_stickyWindows) {
+            if (window && window->noteId() == noteId) {
+                if (activate)
+                    window->summon();
+                return window;
+            }
+        }
     }
+
+    auto* window = new StickyNoteWindow(m_database, noteId);
+    m_stickyWindows.append(window);
+    connect(window, &StickyNoteWindow::noteSaved, this,
+            [this](qint64 savedNoteId) {
+                m_noteCache.remove(savedNoteId);
+                refreshNotes(m_currentNoteId);
+            });
+    connect(window, &QObject::destroyed, this,
+            [this, window] { m_stickyWindows.removeOne(window); });
+    if (activate)
+        window->summon();
+    return window;
+}
+
+void MainWindow::restorePinnedStickies()
+{
+    QString error;
+    const QList<NoteSummary> notes = m_database->listNoteSummaries(QString(), &error);
+    if (!error.isEmpty()) {
+        setStatusMessage(databaseErrorText(QStringLiteral("恢复桌面便签失败"), error), true);
+        return;
+    }
+
+    QSettings settings;
+    for (const NoteSummary& note : notes) {
+        if (note.kind != QStringLiteral("sticky"))
+            continue;
+        const QString base = QStringLiteral("stickyNotes/%1/").arg(note.id);
+        if (settings.value(base + QStringLiteral("open"), false).toBool()
+            && settings.value(base + QStringLiteral("pinned"), true).toBool()) {
+            openSticky(note.id, false)->summon();
+        }
+    }
+}
+
+void MainWindow::summonSticky()
+{
+    openSticky();
 }
 
 void MainWindow::showMainWindow()
 {
-    showNormal();
+    if (isMinimized())
+        showNormal();
+    else
+        show();
     raise();
     activateWindow();
+    if (m_contentSuspended && !m_resumeQueued) {
+        m_resumeQueued = true;
+        QTimer::singleShot(0, this, [this] {
+            m_resumeQueued = false;
+            resumeHeavyContent();
+        });
+    }
 }
 
 void MainWindow::requestQuit()
 {
     m_quitting = true;
     saveCurrentNote(true);
-    if (m_stickyWindow)
-        m_stickyWindow->flushSave();
+    for (StickyNoteWindow* window : m_stickyWindows) {
+        if (window)
+            window->flushSave();
+    }
     if (m_trayIcon)
         m_trayIcon->hide();
     QSettings settings;
     settings.setValue(QStringLiteral("main/geometry"), saveGeometry());
     qApp->quit();
+}
+
+void MainWindow::toggleMaximized()
+{
+    isMaximized() ? showNormal() : showMaximized();
+}
+
+void MainWindow::updateWindowChrome()
+{
+    if (!m_maximizeButton)
+        return;
+    const bool maximized = isMaximized();
+    m_maximizeButton->setText(maximized ? QStringLiteral("❐") : QStringLiteral("□"));
+    m_maximizeButton->setToolTip(maximized ? QStringLiteral("还原") : QStringLiteral("最大化"));
 }
 
 void MainWindow::updateFormatControls()
@@ -1623,6 +1871,29 @@ void MainWindow::setStatusMessage(const QString& message, bool warning)
     m_saveStateLabel->setStyleSheet(warning ? QStringLiteral("color: #B55345;") : QString());
 }
 
+void MainWindow::changeEvent(QEvent* event)
+{
+    QMainWindow::changeEvent(event);
+    if (event->type() == QEvent::WindowStateChange) {
+        updateWindowChrome();
+        if (isMinimized()) {
+            QTimer::singleShot(250, this, [this] {
+                if (isMinimized())
+                    suspendHeavyContent();
+            });
+        } else if (m_contentSuspended && isVisible()) {
+            QTimer::singleShot(0, this, &MainWindow::resumeHeavyContent);
+        }
+    }
+}
+
+bool MainWindow::nativeEvent(const QByteArray& eventType, void* message, qintptr* result)
+{
+    if (WindowChrome::handleNativeHitTest(this, message, result))
+        return true;
+    return QMainWindow::nativeEvent(eventType, message, result);
+}
+
 void MainWindow::closeEvent(QCloseEvent* event)
 {
     saveCurrentNote(true);
@@ -1637,10 +1908,12 @@ void MainWindow::closeEvent(QCloseEvent* event)
     }
 
     hide();
+    suspendHeavyContent();
     event->ignore();
-    if (!m_trayHintShown) {
+    if (!m_trayHintShown
+        && !property("suppressTrayNotifications").toBool()) {
         m_trayIcon->showMessage(QStringLiteral("夜航仍在后台"),
-                                QStringLiteral("按 Ctrl+Alt+N 可随时呼出快速便签。"),
+                                QStringLiteral("按 Ctrl+Alt+N 可随时新建桌面便签。"),
                                 QSystemTrayIcon::Information,
                                 2500);
         m_trayHintShown = true;
