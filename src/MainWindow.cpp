@@ -9,6 +9,7 @@
 #include "WindowChrome.h"
 
 #include <QAbstractNativeEventFilter>
+#include <QAbstractItemView>
 #include <QAction>
 #include <QApplication>
 #include <QBuffer>
@@ -19,12 +20,15 @@
 #include <QCryptographicHash>
 #include <QDateTime>
 #include <QDesktopServices>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QDir>
 #include <QEvent>
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFont>
+#include <QFormLayout>
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QIcon>
@@ -563,6 +567,10 @@ void MainWindow::buildMenus()
     stickyAction->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+N")));
 
     auto* manageMenu = m_appMenuBar->addMenu(QStringLiteral("管理(&M)"));
+    QAction* collectAction = manageMenu->addAction(QStringLiteral("收舟入册…"));
+    collectAction->setObjectName(QStringLiteral("collectStickiesAction"));
+    collectAction->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+B")));
+    manageMenu->addSeparator();
     QAction* newFolderAction = manageMenu->addAction(QStringLiteral("新建分组…"));
     newFolderAction->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+G")));
     QAction* renameFolderAction = manageMenu->addAction(QStringLiteral("重命名当前分组…"));
@@ -578,6 +586,7 @@ void MainWindow::buildMenus()
                                                 "Ctrl+N　　　新建笔记\n"
                                                 "Ctrl+O　　　导入文档\n"
                                                 "Ctrl+Shift+I　插入图片\n"
+                                                "Ctrl+Shift+B　收舟入册\n"
                                                 "Ctrl+Shift+G　新建分组\n"
                                                 "F2　　　　　重命名当前笔记\n"
                                                 "Ctrl+B / I / U　文字格式\n"
@@ -604,6 +613,7 @@ void MainWindow::buildMenus()
     connect(quitAction, &QAction::triggered, this, &MainWindow::requestQuit);
     connect(imageAction, &QAction::triggered, this, &MainWindow::chooseImages);
     connect(stickyAction, &QAction::triggered, this, &MainWindow::summonSticky);
+    connect(collectAction, &QAction::triggered, this, &MainWindow::collectStickies);
     connect(newFolderAction, &QAction::triggered, this, &MainWindow::createFolder);
     connect(renameFolderAction, &QAction::triggered, this, &MainWindow::renameSelectedFolder);
     connect(deleteFolderAction, &QAction::triggered, this, &MainWindow::deleteSelectedFolder);
@@ -661,6 +671,26 @@ void MainWindow::applyTheme()
         QMainWindow#mainWindow { background: #071422; }
         QWidget#windowShell, QFrame#appContent { background: transparent; }
         QDialog, QMessageBox { background: #F5E7CD; color: #253144; }
+        QDialog#collectStickiesDialog { background: #F5E7CD; }
+        QDialog#collectStickiesDialog QLabel#collectEyebrow {
+            color: #A04B3C; font-size: 9px; font-weight: 700; letter-spacing: 1px;
+        }
+        QDialog#collectStickiesDialog QLabel#collectHeading { color: #172A40; }
+        QDialog#collectStickiesDialog QLabel#collectHint { color: #71695D; }
+        QDialog#collectStickiesDialog QLabel#collectFormLabel {
+            color: #554A3B; font-weight: 600;
+        }
+        QListWidget#collectStickyList {
+            background: #FAEED8; color: #263247; border: 1px solid #CBB894;
+            border-radius: 0; outline: none; padding: 0;
+        }
+        QListWidget#collectStickyList::item {
+            background: transparent; color: #263247; padding: 10px 8px;
+            border: 0; border-bottom: 1px solid rgba(132, 102, 62, 54);
+        }
+        QListWidget#collectStickyList::item:selected {
+            background: #E7D3AF; color: #17283D;
+        }
 
         QFrame#appTitleBar {
             background: rgba(4, 16, 30, 218);
@@ -1158,6 +1188,199 @@ void MainWindow::createNote()
     m_titleEdit->setFocus();
 }
 
+void MainWindow::collectStickies()
+{
+    if (!saveCurrentNote(true))
+        return;
+    for (StickyNoteWindow* window : m_stickyWindows) {
+        if (window)
+            window->flushSave();
+    }
+
+    QString error;
+    const QList<NoteSummary> summaries = m_database->listNoteSummaries(QString(), &error);
+    if (!error.isEmpty()) {
+        setStatusMessage(databaseErrorText(QStringLiteral("读取便签失败"), error), true);
+        return;
+    }
+    QList<NoteSummary> stickies;
+    for (const NoteSummary& summary : summaries) {
+        if (summary.kind == QStringLiteral("sticky"))
+            stickies.append(summary);
+    }
+    if (stickies.isEmpty()) {
+        QMessageBox::information(this,
+                                 QStringLiteral("收舟入册"),
+                                 QStringLiteral("尚无可入册的桌面便签。先记下一枚灵感，再回来整理。"));
+        return;
+    }
+
+    QDialog dialog(this);
+    dialog.setObjectName(QStringLiteral("collectStickiesDialog"));
+    dialog.setWindowTitle(QStringLiteral("收舟入册 · 夜航"));
+    dialog.setWindowIcon(NocturneBrand::appIcon());
+    dialog.resize(610, 570);
+    auto* layout = new QVBoxLayout(&dialog);
+    layout->setContentsMargins(28, 24, 28, 22);
+    layout->setSpacing(11);
+
+    auto* eyebrow = new QLabel(QStringLiteral("NOCTURNE · DESK NOTES"), &dialog);
+    eyebrow->setObjectName(QStringLiteral("collectEyebrow"));
+    layout->addWidget(eyebrow);
+    auto* heading = new QLabel(QStringLiteral("收舟入册"), &dialog);
+    heading->setObjectName(QStringLiteral("collectHeading"));
+    QFont headingFont(NocturneUi::serifFamily(), 22);
+    headingFont.setWeight(QFont::DemiBold);
+    heading->setFont(headingFont);
+    layout->addWidget(heading);
+    auto* description = new QLabel(
+        QStringLiteral("勾选要汇集的便签；拖动条目可调整它们在正式笔记中的先后。"),
+        &dialog);
+    description->setObjectName(QStringLiteral("collectHint"));
+    description->setWordWrap(true);
+    layout->addWidget(description);
+
+    auto* stickyList = new QListWidget(&dialog);
+    stickyList->setObjectName(QStringLiteral("collectStickyList"));
+    stickyList->setDragDropMode(QAbstractItemView::InternalMove);
+    stickyList->setDefaultDropAction(Qt::MoveAction);
+    stickyList->setSelectionMode(QAbstractItemView::SingleSelection);
+    stickyList->setMinimumHeight(235);
+    for (const NoteSummary& sticky : stickies) {
+        QString excerpt = sticky.excerpt.simplified();
+        if (excerpt.isEmpty())
+            excerpt = QStringLiteral("空白便签");
+        const QString updated = sticky.updatedAt.isValid()
+            ? sticky.updatedAt.toLocalTime().toString(QStringLiteral("MM-dd  HH:mm"))
+            : QStringLiteral("刚刚");
+        auto* item = new QListWidgetItem(
+            QStringLiteral("%1\n%2  ·  %3")
+                .arg(sticky.title.trimmed().isEmpty() ? QStringLiteral("快速便签")
+                                                      : sticky.title.trimmed(),
+                     excerpt.left(60),
+                     updated),
+            stickyList);
+        item->setData(Qt::UserRole, sticky.id);
+        item->setFlags(item->flags() | Qt::ItemIsUserCheckable
+                       | Qt::ItemIsDragEnabled | Qt::ItemIsDropEnabled);
+        item->setCheckState(Qt::Checked);
+        item->setSizeHint(QSize(0, 62));
+    }
+    layout->addWidget(stickyList, 1);
+
+    auto* selectionRow = new QHBoxLayout;
+    selectionRow->setSpacing(12);
+    auto* selectionSummary = new QLabel(&dialog);
+    selectionSummary->setObjectName(QStringLiteral("collectHint"));
+    selectionRow->addWidget(selectionSummary, 1);
+    auto* selectAllButton = new QPushButton(QStringLiteral("全选"), &dialog);
+    selectAllButton->setObjectName(QStringLiteral("quietButton"));
+    auto* clearButton = new QPushButton(QStringLiteral("清空"), &dialog);
+    clearButton->setObjectName(QStringLiteral("quietButton"));
+    selectionRow->addWidget(selectAllButton);
+    selectionRow->addWidget(clearButton);
+    layout->addLayout(selectionRow);
+
+    auto* form = new QFormLayout;
+    form->setHorizontalSpacing(16);
+    form->setVerticalSpacing(10);
+    auto* titleEdit = new QLineEdit(
+        QStringLiteral("夜航拾遗 · %1")
+            .arg(QDate::currentDate().toString(QStringLiteral("yyyy-MM-dd"))),
+        &dialog);
+    titleEdit->setObjectName(QStringLiteral("collectNoteTitle"));
+    titleEdit->setMaxLength(160);
+    auto* titleLabel = new QLabel(QStringLiteral("笔记名称"), &dialog);
+    titleLabel->setObjectName(QStringLiteral("collectFormLabel"));
+    form->addRow(titleLabel, titleEdit);
+    auto* folderCombo = new QComboBox(&dialog);
+    folderCombo->setObjectName(QStringLiteral("collectFolderCombo"));
+    folderCombo->addItem(QStringLiteral("未分组"), Database::UnfiledFolder);
+    const QList<FolderRecord> folders = m_database->listFolders(&error);
+    if (!error.isEmpty()) {
+        setStatusMessage(databaseErrorText(QStringLiteral("读取分组失败"), error), true);
+        return;
+    }
+    for (const FolderRecord& folder : folders)
+        folderCombo->addItem(folder.name, folder.id);
+    const int currentFolderIndex = folderCombo->findData(
+        m_currentFolderId > 0 ? m_currentFolderId : Database::UnfiledFolder);
+    folderCombo->setCurrentIndex(std::max(0, currentFolderIndex));
+    auto* folderLabel = new QLabel(QStringLiteral("归入分组"), &dialog);
+    folderLabel->setObjectName(QStringLiteral("collectFormLabel"));
+    form->addRow(folderLabel, folderCombo);
+    layout->addLayout(form);
+
+    auto* preservationHint = new QLabel(
+        QStringLiteral("这是非破坏性操作：入册完成后，原便签仍会保留。"), &dialog);
+    preservationHint->setObjectName(QStringLiteral("collectHint"));
+    layout->addWidget(preservationHint);
+
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok
+                                             | QDialogButtonBox::Cancel,
+                                         &dialog);
+    QPushButton* acceptButton = buttons->button(QDialogButtonBox::Ok);
+    acceptButton->setText(QStringLiteral("收舟入册"));
+    acceptButton->setObjectName(QStringLiteral("collectStickiesAccept"));
+    buttons->button(QDialogButtonBox::Cancel)->setText(QStringLiteral("取消"));
+    layout->addWidget(buttons);
+
+    const auto updateSelection = [stickyList, selectionSummary, titleEdit, acceptButton] {
+        int checked = 0;
+        for (int row = 0; row < stickyList->count(); ++row) {
+            if (stickyList->item(row)->checkState() == Qt::Checked)
+                ++checked;
+        }
+        selectionSummary->setText(QStringLiteral("已选 %1 / %2 枚")
+                                      .arg(checked)
+                                      .arg(stickyList->count()));
+        acceptButton->setEnabled(checked > 0 && !titleEdit->text().trimmed().isEmpty());
+    };
+    connect(stickyList, &QListWidget::itemChanged, &dialog,
+            [updateSelection](QListWidgetItem*) { updateSelection(); });
+    connect(titleEdit, &QLineEdit::textChanged, &dialog,
+            [updateSelection](const QString&) { updateSelection(); });
+    connect(selectAllButton, &QPushButton::clicked, &dialog, [stickyList] {
+        for (int row = 0; row < stickyList->count(); ++row)
+            stickyList->item(row)->setCheckState(Qt::Checked);
+    });
+    connect(clearButton, &QPushButton::clicked, &dialog, [stickyList] {
+        for (int row = 0; row < stickyList->count(); ++row)
+            stickyList->item(row)->setCheckState(Qt::Unchecked);
+    });
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    updateSelection();
+
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+
+    QList<qint64> selectedIds;
+    for (int row = 0; row < stickyList->count(); ++row) {
+        QListWidgetItem* item = stickyList->item(row);
+        if (item->checkState() == Qt::Checked)
+            selectedIds.append(item->data(Qt::UserRole).toLongLong());
+    }
+    const qint64 folderId = folderCombo->currentData().toLongLong();
+    const qint64 noteId = m_database->collectStickyNotes(selectedIds,
+                                                         titleEdit->text(),
+                                                         folderId,
+                                                         &error);
+    if (noteId <= 0) {
+        setStatusMessage(databaseErrorText(QStringLiteral("收舟入册失败"), error), true);
+        return;
+    }
+
+    m_noteCache.clear();
+    m_searchTimer->stop();
+    m_searchEdit->clear();
+    refreshFolders(folderId);
+    refreshNotes(noteId);
+    setStatusMessage(QStringLiteral("已将 %1 枚便签收入“%2”")
+                         .arg(selectedIds.size())
+                         .arg(titleEdit->text().simplified()));
+}
+
 void MainWindow::renameCurrentNote()
 {
     if (m_currentNoteId < 0)
@@ -1176,8 +1399,10 @@ void MainWindow::showNoteContextMenu(const QPoint& position)
 
     QMenu menu(this);
     QAction* openStickyAction = nullptr;
+    QAction* collectStickyAction = nullptr;
     if (item->data(Qt::UserRole + 4).toString() == QStringLiteral("sticky")) {
         openStickyAction = menu.addAction(QStringLiteral("在桌面打开"));
+        collectStickyAction = menu.addAction(QStringLiteral("收舟入册…"));
         menu.addSeparator();
     }
     QAction* renameAction = menu.addAction(QStringLiteral("重命名"));
@@ -1185,6 +1410,8 @@ void MainWindow::showNoteContextMenu(const QPoint& position)
     QAction* selected = menu.exec(m_noteList->viewport()->mapToGlobal(position));
     if (openStickyAction && selected == openStickyAction)
         openSticky(item->data(Qt::UserRole).toLongLong());
+    else if (collectStickyAction && selected == collectStickyAction)
+        collectStickies();
     else if (selected == renameAction)
         renameCurrentNote();
     else if (selected == deleteAction)

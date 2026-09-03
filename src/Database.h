@@ -39,6 +39,14 @@ struct TodoRecord {
     int sortOrder = 0;
 };
 
+struct NoteSourceRecord {
+    qint64 noteId = 0;
+    qint64 sourceNoteId = 0;
+    QString sourceKind;
+    QDateTime sourceUpdatedAt;
+    int position = 0;
+};
+
 class Database {
 public:
     static constexpr qint64 AllFolders = -1;
@@ -75,6 +83,12 @@ public:
                           qint64 folderId,
                           QString *error = nullptr);
     bool softDeleteNote(qint64 id, QString *error = nullptr);
+    qint64 collectStickyNotes(const QList<qint64> &stickyIds,
+                              const QString &title,
+                              qint64 folderId = UnfiledFolder,
+                              QString *error = nullptr);
+    QList<NoteSourceRecord> noteSources(qint64 noteId,
+                                        QString *error = nullptr) const;
 
     QList<FolderRecord> listFolders(QString *error = nullptr) const;
     qint64 createFolder(const QString &name,

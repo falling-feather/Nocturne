@@ -5,13 +5,17 @@
 #include <QApplication>
 #include <QAction>
 #include <QDir>
+#include <QDialog>
 #include <QElapsedTimer>
 #include <QEventLoop>
+#include <QLineEdit>
+#include <QListWidget>
 #include <QPushButton>
 #include <QSettings>
 #include <QSlider>
 #include <QStandardPaths>
 #include <QTextEdit>
+#include <QTimer>
 #include <QToolButton>
 #include <QUuid>
 
@@ -69,6 +73,10 @@ int main(int argc, char* argv[])
     ok &= check(mainWindow->findChild<QAction*>(
                     QStringLiteral("openBackupDirectoryAction")) != nullptr,
                 "backup recovery directory action is available in the file menu");
+    QAction* collectAction = mainWindow->findChild<QAction*>(
+        QStringLiteral("collectStickiesAction"));
+    ok &= check(collectAction != nullptr,
+                "collect-stickies action is available in the manage menu");
 
     auto* stickyButton = mainWindow->findChild<QPushButton*>(
         QStringLiteral("secondaryButton"));
@@ -167,6 +175,65 @@ int main(int argc, char* argv[])
         stickies.at(0)->move(mainWindow->x() + 80, mainWindow->y() + 104);
         stickies.at(1)->move(mainWindow->x() + 520, mainWindow->y() + 164);
         pumpEvents();
+    }
+
+    bool collectDialogInspected = false;
+    bool collectDialogScreenshotSaved = false;
+    if (collectAction && firstStickyId > 0 && secondStickyId > 0) {
+        QTimer::singleShot(60, &app, [&] {
+            QDialog* dialog = mainWindow->findChild<QDialog*>(
+                QStringLiteral("collectStickiesDialog"));
+            if (!dialog)
+                return;
+            auto* sourceList = dialog->findChild<QListWidget*>(
+                QStringLiteral("collectStickyList"));
+            auto* titleEdit = dialog->findChild<QLineEdit*>(
+                QStringLiteral("collectNoteTitle"));
+            auto* acceptButton = dialog->findChild<QPushButton*>(
+                QStringLiteral("collectStickiesAccept"));
+            collectDialogInspected = sourceList && sourceList->count() == 2
+                && titleEdit && acceptButton && acceptButton->isEnabled();
+            collectDialogScreenshotSaved = dialog->grab().save(
+                QDir(outputDirectory).filePath(
+                    QStringLiteral("Nocturne-v015-collect-dialog.png")));
+            if (titleEdit)
+                titleEdit->setText(QStringLiteral("UI 测试合册"));
+            if (acceptButton)
+                acceptButton->click();
+            else
+                dialog->reject();
+        });
+        collectAction->trigger();
+        pumpEvents();
+
+        QString collectError;
+        const QList<NoteSummary> matches = database->listNoteSummaries(
+            QStringLiteral("UI 测试合册"), &collectError);
+        qint64 collectedId = 0;
+        for (const NoteSummary& summary : matches) {
+            if (summary.title == QStringLiteral("UI 测试合册")
+                && summary.kind == QStringLiteral("note")) {
+                collectedId = summary.id;
+                break;
+            }
+        }
+        const QList<NoteSourceRecord> sources = database->noteSources(
+            collectedId, &collectError);
+        bool hasFirst = false;
+        bool hasSecond = false;
+        for (const NoteSourceRecord& source : sources) {
+            hasFirst |= source.sourceNoteId == firstStickyId;
+            hasSecond |= source.sourceNoteId == secondStickyId;
+        }
+        ok &= check(collectDialogInspected,
+                    "collect dialog lists both stickies and enables collection");
+        ok &= check(collectDialogScreenshotSaved,
+                    "collect dialog screenshot saves for visual regression review");
+        ok &= check(collectedId > 0 && sources.size() == 2 && hasFirst && hasSecond,
+                    "collect dialog creates a regular note with both durable sources");
+        ok &= check(database->note(firstStickyId, &collectError).has_value()
+                        && database->note(secondStickyId, &collectError).has_value(),
+                    "UI collection preserves both source stickies");
     }
 
     ok &= check(mainWindow->grab().save(

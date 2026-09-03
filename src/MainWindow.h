@@ -55,6 +55,7 @@ private:
     bool saveCurrentNote(bool force = false);
     void scheduleSave();
     void createNote();
+    void collectStickies();
     void renameCurrentNote();
     void deleteCurrentNote();
     void showNoteContextMenu(const QPoint& position);

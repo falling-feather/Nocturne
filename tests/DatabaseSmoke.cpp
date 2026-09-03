@@ -112,6 +112,7 @@ int main(int argc, char* argv[])
     qint64 editedNoteId = 0;
     qint64 stickyId = 0;
     qint64 secondStickyId = 0;
+    qint64 collectedNoteId = 0;
     {
         Database database;
         QString error;
@@ -228,6 +229,53 @@ int main(int argc, char* argv[])
                             == QStringLiteral("第二枚便签的独立修改"),
                     "saving one sticky leaves the other unchanged");
 
+        const qint64 collectedFolderId = database.createFolder(
+            QStringLiteral("灵感合册"), &error);
+        collectedNoteId = database.collectStickyNotes(
+            QList<qint64>{secondStickyId, stickyId},
+            QStringLiteral("潮汐关卡拾遗"),
+            collectedFolderId,
+            &error);
+        if (collectedNoteId <= 0)
+            std::cerr << "FAIL detail: collect stickies: "
+                      << error.toStdString() << '\n';
+        const auto collected = database.note(collectedNoteId, &error);
+        ok &= check(collectedFolderId > 0 && collectedNoteId > 0
+                        && collected.has_value()
+                        && collected->kind == QStringLiteral("note")
+                        && collected->folderId == collectedFolderId,
+                    "selected stickies collect into a regular note in the target folder");
+        ok &= check(collected.has_value()
+                        && collected->plainText.indexOf(
+                               QStringLiteral("第二枚便签的独立修改"))
+                            < collected->plainText.indexOf(
+                                QStringLiteral("兼容接口第三版"))
+                        && collected->html.contains(
+                            QStringLiteral("data-nocturne-source-id=\"%1\"")
+                                .arg(secondStickyId))
+                        && collected->html.contains(
+                            QStringLiteral("data-nocturne-source-id=\"%1\"")
+                                .arg(stickyId)),
+                    "collection preserves chosen order and embeds source provenance");
+        const QList<NoteSourceRecord> sourceRecords = database.noteSources(
+            collectedNoteId, &error);
+        ok &= check(sourceRecords.size() == 2
+                        && sourceRecords.at(0).sourceNoteId == secondStickyId
+                        && sourceRecords.at(0).sourceKind == QStringLiteral("sticky")
+                        && sourceRecords.at(1).sourceNoteId == stickyId
+                        && sourceRecords.at(0).sourceUpdatedAt.isValid(),
+                    "collection stores durable ordered provenance outside editable HTML");
+        const QList<NoteSummary> collectedSearch = database.listNoteSummaries(
+            QStringLiteral("第二枚便签的独立修改"), &error);
+        bool collectedIsSearchable = false;
+        for (const NoteSummary &summary : collectedSearch)
+            collectedIsSearchable |= summary.id == collectedNoteId;
+        ok &= check(collectedIsSearchable,
+                    "collected plain text is immediately searchable");
+        ok &= check(database.note(stickyId, &error).has_value()
+                        && database.note(secondStickyId, &error).has_value(),
+                    "collecting is non-destructive and preserves source stickies");
+
         const qint64 todoId = database.createTodo(QStringLiteral("画概念图"), &error);
         ok &= check(todoId > 0, "todo creates");
         ok &= check(database.updateTodoDone(todoId, true, &error), "todo completes");
@@ -256,8 +304,15 @@ int main(int argc, char* argv[])
                         && secondSticky->plainText
                             == QStringLiteral("第二枚便签的独立修改"),
                     "multiple sticky notes survive restart independently");
-        ok &= check(reopened.listFolders(&error).isEmpty(),
-                    "deleted folder stays deleted after restart");
+        const auto collected = reopened.note(collectedNoteId, &error);
+        ok &= check(collected.has_value()
+                        && collected->title == QStringLiteral("潮汐关卡拾遗")
+                        && collected->kind == QStringLiteral("note"),
+                    "collected regular note survives restart");
+        const QList<FolderRecord> reopenedFolders = reopened.listFolders(&error);
+        ok &= check(reopenedFolders.size() == 1
+                        && reopenedFolders.first().name == QStringLiteral("灵感合册"),
+                    "deleted working folder stays gone while collection folder survives");
         ok &= check(reopened.listTodos(&error).size() == 1,
                     "todo survives restart");
     }

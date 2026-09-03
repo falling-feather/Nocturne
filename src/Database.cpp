@@ -4,6 +4,7 @@
 #include <QDir>
 #include <QMetaType>
 #include <QRegularExpression>
+#include <QSet>
 #include <QSqlDatabase>
 #include <QSqlError>
 #include <QSqlQuery>
@@ -16,7 +17,7 @@
 
 namespace {
 
-constexpr int kSchemaVersion = 3;
+constexpr int kSchemaVersion = 4;
 constexpr int kExcerptLength = 180;
 
 void clearError(QString *error)
@@ -378,7 +379,16 @@ bool Database::open(QString *error)
             QStringLiteral(
                 "CREATE TABLE IF NOT EXISTS settings ("
                 "key TEXT PRIMARY KEY,"
-                "value TEXT NOT NULL DEFAULT '')")
+                "value TEXT NOT NULL DEFAULT '')"),
+            QStringLiteral(
+                "CREATE TABLE IF NOT EXISTS note_sources ("
+                "note_id INTEGER NOT NULL REFERENCES notes(id) ON DELETE CASCADE,"
+                "source_note_id INTEGER NOT NULL,"
+                "source_kind TEXT NOT NULL,"
+                "source_updated_at TEXT NOT NULL,"
+                "position INTEGER NOT NULL DEFAULT 0,"
+                "PRIMARY KEY(note_id, position),"
+                "UNIQUE(note_id, source_note_id))")
         };
 
         for (const QString &statement : baseSchemaStatements) {
@@ -425,7 +435,10 @@ bool Database::open(QString *error)
                 "ON folders(parent_id, sort_order, name COLLATE NOCASE)"),
             QStringLiteral(
                 "CREATE INDEX IF NOT EXISTS idx_todos_order "
-                "ON todos(done, sort_order, id)")
+                "ON todos(done, sort_order, id)"),
+            QStringLiteral(
+                "CREATE INDEX IF NOT EXISTS idx_note_sources_source "
+                "ON note_sources(source_note_id, note_id)")
         };
 
         for (const QString &statement : indexStatements) {
@@ -869,6 +882,171 @@ bool Database::softDeleteNote(qint64 id, QString *error)
         return false;
     }
     return commitTransaction(database, error);
+}
+
+qint64 Database::collectStickyNotes(const QList<qint64> &stickyIds,
+                                    const QString &title,
+                                    qint64 folderId,
+                                    QString *error)
+{
+    clearError(error);
+    if (stickyIds.isEmpty()) {
+        setError(error, QStringLiteral("请至少选择一枚便签。"));
+        return 0;
+    }
+
+    QList<NoteRecord> sources;
+    QSet<qint64> seenIds;
+    sources.reserve(stickyIds.size());
+    for (const qint64 id : stickyIds) {
+        if (id <= 0 || seenIds.contains(id))
+            continue;
+        const std::optional<NoteRecord> source = note(id, error);
+        if (!source.has_value()) {
+            if (error && error->isEmpty())
+                *error = QStringLiteral("无法读取编号为 %1 的便签。").arg(id);
+            return 0;
+        }
+        if (source->kind != QStringLiteral("sticky")) {
+            setError(error,
+                     QStringLiteral("编号为 %1 的记录不是桌面便签。").arg(id));
+            return 0;
+        }
+        seenIds.insert(id);
+        sources.append(*source);
+    }
+    if (sources.isEmpty()) {
+        setError(error, QStringLiteral("没有可入册的有效便签。"));
+        return 0;
+    }
+
+    const QString safeTitle = title.simplified().isEmpty()
+        ? QStringLiteral("夜航拾遗 · %1")
+              .arg(QDate::currentDate().toString(QStringLiteral("yyyy-MM-dd")))
+        : title.simplified();
+    const QDateTime collectedDateTime = QDateTime::currentDateTime();
+    const QString collectedAt = collectedDateTime.toString(QStringLiteral("yyyy-MM-dd HH:mm"));
+    QString html = QStringLiteral(
+        "<p><em>由夜航“收舟入册”汇集 %1 枚桌面便签 · %2</em></p><hr>")
+                       .arg(sources.size())
+                       .arg(collectedAt.toHtmlEscaped());
+    QString plainText = QStringLiteral("由夜航“收舟入册”汇集 %1 枚桌面便签 · %2")
+                            .arg(sources.size())
+                            .arg(collectedAt);
+
+    for (int index = 0; index < sources.size(); ++index) {
+        const NoteRecord &source = sources.at(index);
+        const QString sourceTitle = source.title.simplified().isEmpty()
+            ? QStringLiteral("便签 %1").arg(index + 1)
+            : source.title.simplified();
+        const QString updatedIso = source.updatedAt.toUTC().toString(Qt::ISODateWithMs);
+        const QString updatedDisplay = source.updatedAt.isValid()
+            ? source.updatedAt.toLocalTime().toString(QStringLiteral("yyyy-MM-dd HH:mm"))
+            : QStringLiteral("时间未知");
+        html += QStringLiteral(
+                    "<section data-nocturne-source=\"sticky\" "
+                    "data-nocturne-source-id=\"%1\" "
+                    "data-nocturne-source-updated=\"%2\">"
+                    "<h2>%3</h2><p><small>便签 %4 · %5</small></p>%6</section>%7")
+                    .arg(source.id)
+                    .arg(updatedIso.toHtmlEscaped(),
+                         sourceTitle.toHtmlEscaped())
+                    .arg(index + 1)
+                    .arg(updatedDisplay.toHtmlEscaped(),
+                         stickyHtml(source.plainText),
+                         index + 1 < sources.size() ? QStringLiteral("<hr>")
+                                                    : QString());
+        plainText += QStringLiteral("\n\n%1\n便签 %2 · %3\n%4")
+                         .arg(sourceTitle)
+                         .arg(index + 1)
+                         .arg(updatedDisplay, source.plainText);
+    }
+
+    QSqlDatabase database = openedDatabase(connectionName_, error);
+    if (!database.isValid() || !beginTransaction(database, error))
+        return 0;
+
+    const QString storageNow = toStorageDateTime(collectedDateTime);
+    QSqlQuery insertNote(database);
+    insertNote.prepare(QStringLiteral(
+        "INSERT INTO notes(folder_id, kind, title, html, plain_text, excerpt, "
+        "body_revision, content_hash, created_at, updated_at) "
+        "VALUES(:folder_id, 'note', :title, :html, :plain_text, :excerpt, 1, "
+        ":content_hash, :created_at, :updated_at)"));
+    insertNote.bindValue(QStringLiteral(":folder_id"), nullableId(folderId));
+    insertNote.bindValue(QStringLiteral(":title"), safeTitle);
+    insertNote.bindValue(QStringLiteral(":html"), html);
+    insertNote.bindValue(QStringLiteral(":plain_text"), plainText);
+    insertNote.bindValue(QStringLiteral(":excerpt"), noteExcerpt(plainText));
+    insertNote.bindValue(QStringLiteral(":content_hash"), contentHash(html));
+    insertNote.bindValue(QStringLiteral(":created_at"), storageNow);
+    insertNote.bindValue(QStringLiteral(":updated_at"), storageNow);
+    if (!insertNote.exec()) {
+        setError(error, queryError(QStringLiteral("创建合册笔记失败"), insertNote));
+        database.rollback();
+        return 0;
+    }
+    const qint64 collectedNoteId = insertNote.lastInsertId().toLongLong();
+    if (collectedNoteId <= 0) {
+        setError(error, QStringLiteral("创建合册笔记失败：数据库未返回有效编号。"));
+        database.rollback();
+        return 0;
+    }
+
+    QSqlQuery insertSource(database);
+    insertSource.prepare(QStringLiteral(
+        "INSERT INTO note_sources(note_id, source_note_id, source_kind, "
+        "source_updated_at, position) "
+        "VALUES(:note_id, :source_note_id, :source_kind, :source_updated_at, :position)"));
+    for (int index = 0; index < sources.size(); ++index) {
+        const NoteRecord &source = sources.at(index);
+        insertSource.bindValue(QStringLiteral(":note_id"), collectedNoteId);
+        insertSource.bindValue(QStringLiteral(":source_note_id"), source.id);
+        insertSource.bindValue(QStringLiteral(":source_kind"), source.kind);
+        insertSource.bindValue(QStringLiteral(":source_updated_at"),
+                               toStorageDateTime(source.updatedAt));
+        insertSource.bindValue(QStringLiteral(":position"), index);
+        if (!insertSource.exec()) {
+            setError(error,
+                     queryError(QStringLiteral("记录合册来源失败"), insertSource));
+            database.rollback();
+            return 0;
+        }
+        insertSource.finish();
+    }
+
+    if (!commitTransaction(database, error))
+        return 0;
+    return collectedNoteId;
+}
+
+QList<NoteSourceRecord> Database::noteSources(qint64 noteId, QString *error) const
+{
+    clearError(error);
+    QList<NoteSourceRecord> sources;
+    QSqlDatabase database = openedDatabase(connectionName_, error);
+    if (!database.isValid())
+        return sources;
+
+    QSqlQuery query(database);
+    query.prepare(QStringLiteral(
+        "SELECT note_id, source_note_id, source_kind, source_updated_at, position "
+        "FROM note_sources WHERE note_id = :note_id ORDER BY position, source_note_id"));
+    query.bindValue(QStringLiteral(":note_id"), noteId);
+    if (!query.exec()) {
+        setError(error, queryError(QStringLiteral("读取合册来源失败"), query));
+        return {};
+    }
+    while (query.next()) {
+        NoteSourceRecord source;
+        source.noteId = query.value(0).toLongLong();
+        source.sourceNoteId = query.value(1).toLongLong();
+        source.sourceKind = query.value(2).toString();
+        source.sourceUpdatedAt = fromStorageDateTime(query.value(3));
+        source.position = query.value(4).toInt();
+        sources.append(source);
+    }
+    return sources;
 }
 
 QList<FolderRecord> Database::listFolders(QString *error) const
