@@ -3,6 +3,7 @@
 #include "StickyNoteWindow.h"
 
 #include <QApplication>
+#include <QAction>
 #include <QDir>
 #include <QElapsedTimer>
 #include <QEventLoop>
@@ -61,6 +62,13 @@ int main(int argc, char* argv[])
     auto mainWindow = std::make_unique<MainWindow>(database.get());
     mainWindow->show();
     pumpEvents();
+
+    ok &= check(mainWindow->findChild<QAction*>(
+                    QStringLiteral("manualBackupAction")) != nullptr,
+                "manual backup action is available in the file menu");
+    ok &= check(mainWindow->findChild<QAction*>(
+                    QStringLiteral("openBackupDirectoryAction")) != nullptr,
+                "backup recovery directory action is available in the file menu");
 
     auto* stickyButton = mainWindow->findChild<QPushButton*>(
         QStringLiteral("secondaryButton"));

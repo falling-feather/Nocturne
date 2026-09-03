@@ -1,5 +1,6 @@
 #include "MainWindow.h"
 
+#include "BackupManager.h"
 #include "Branding.h"
 #include "Database.h"
 #include "NoteEditor.h"
@@ -17,6 +18,7 @@
 #include <QComboBox>
 #include <QCryptographicHash>
 #include <QDateTime>
+#include <QDesktopServices>
 #include <QDir>
 #include <QEvent>
 #include <QFile>
@@ -55,6 +57,7 @@
 #include <QTextListFormat>
 #include <QTime>
 #include <QTimer>
+#include <QThread>
 #include <QToolButton>
 #include <QUuid>
 #include <QUrl>
@@ -191,6 +194,7 @@ MainWindow::MainWindow(Database* database, QWidget* parent)
     refreshNotes();
     refreshTodos();
     QTimer::singleShot(0, this, &MainWindow::restorePinnedStickies);
+    scheduleAutomaticBackup();
 }
 
 MainWindow::~MainWindow()
@@ -203,6 +207,12 @@ MainWindow::~MainWindow()
 
     QSettings settings;
     settings.setValue(QStringLiteral("main/geometry"), saveGeometry());
+
+    if (m_backupThread) {
+        m_backupThread->wait();
+        delete m_backupThread;
+        m_backupThread = nullptr;
+    }
 }
 
 void MainWindow::buildUi()
@@ -533,6 +543,11 @@ void MainWindow::buildMenus()
     QAction* exportAction = fileMenu->addAction(QStringLiteral("导出当前笔记…"));
     exportAction->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+S")));
     fileMenu->addSeparator();
+    QAction* backupAction = fileMenu->addAction(QStringLiteral("立即备份本地资料"));
+    backupAction->setObjectName(QStringLiteral("manualBackupAction"));
+    QAction* openBackupAction = fileMenu->addAction(QStringLiteral("打开备份目录"));
+    openBackupAction->setObjectName(QStringLiteral("openBackupDirectoryAction"));
+    fileMenu->addSeparator();
     QAction* renameAction = fileMenu->addAction(QStringLiteral("重命名当前笔记"));
     renameAction->setShortcut(QKeySequence(Qt::Key_F2));
     QAction* deleteAction = fileMenu->addAction(QStringLiteral("移到回收站"));
@@ -568,10 +583,22 @@ void MainWindow::buildMenus()
                                                 "Ctrl+B / I / U　文字格式\n"
                                                 "Ctrl+Shift+S　导出当前笔记"));
     });
+    QAction* backupHelp = helpMenu->addAction(QStringLiteral("备份与恢复说明"));
+    connect(backupHelp, &QAction::triggered, this, [this] {
+        QMessageBox::information(
+            this,
+            QStringLiteral("夜航备份与恢复"),
+            QStringLiteral("夜航每天最多自动备份一次，并分别保留最近 7 份自动备份和 10 份手动备份。\n\n"
+                           "每份备份都包含 notebook.sqlite3、attachments 文件夹和 backup.json 校验清单。\n\n"
+                           "恢复前请先完全退出夜航，再把所选备份中的数据库与附件复制回夜航数据目录。"
+                           "建议先保留当前数据；也可以从“文件 → 打开备份目录”检查备份。"));
+    });
 
     connect(newAction, &QAction::triggered, this, &MainWindow::createNote);
     connect(importAction, &QAction::triggered, this, &MainWindow::importDocument);
     connect(exportAction, &QAction::triggered, this, &MainWindow::exportDocument);
+    connect(backupAction, &QAction::triggered, this, [this] { startBackup(false); });
+    connect(openBackupAction, &QAction::triggered, this, &MainWindow::openBackupDirectory);
     connect(renameAction, &QAction::triggered, this, &MainWindow::renameCurrentNote);
     connect(deleteAction, &QAction::triggered, this, &MainWindow::deleteCurrentNote);
     connect(quitAction, &QAction::triggered, this, &MainWindow::requestQuit);
@@ -1818,6 +1845,96 @@ void MainWindow::showMainWindow()
     }
 }
 
+void MainWindow::scheduleAutomaticBackup()
+{
+    // Give startup, note loading and pinned-sticky restoration priority. The actual
+    // snapshot and attachment copy run on their own thread.
+    QTimer::singleShot(5000, this, [this] {
+        if (m_quitting
+            || property("suppressTrayNotifications").toBool()
+            || qApp->organizationName() == QStringLiteral("FeatherNoteTests")) {
+            return;
+        }
+        startBackup(true);
+    });
+}
+
+void MainWindow::startBackup(bool automatic)
+{
+    if (m_quitting)
+        return;
+    if (automatic
+        && BackupManager(m_database->dataDirectory())
+               .hasAutomaticBackupForDate(QDate::currentDate())) {
+        return;
+    }
+    if (m_backupThread) {
+        if (!automatic)
+            setStatusMessage(QStringLiteral("已有备份正在进行，请稍候"), true);
+        return;
+    }
+    if (!saveCurrentNote(true))
+        return;
+    for (StickyNoteWindow* window : m_stickyWindows) {
+        if (window)
+            window->flushSave();
+    }
+
+    setStatusMessage(automatic ? QStringLiteral("正在建立今日自动备份…")
+                               : QStringLiteral("正在备份本地资料…"));
+    const QString dataDirectory = m_database->dataDirectory();
+    auto result = std::make_shared<BackupResult>();
+    QThread* thread = QThread::create([dataDirectory, automatic, result] {
+        BackupManager manager(dataDirectory);
+        *result = manager.create(automatic ? BackupKind::Automatic
+                                           : BackupKind::Manual);
+    });
+    m_backupThread = thread;
+    connect(thread, &QThread::finished, this,
+            [this, thread, result, automatic] {
+                if (m_backupThread == thread)
+                    m_backupThread = nullptr;
+                thread->deleteLater();
+
+                if (!result->success) {
+                    setStatusMessage(
+                        QStringLiteral("备份失败：%1").arg(result->error), true);
+                } else if (result->created) {
+                    const QString cleaned = QDir::toNativeSeparators(result->directory);
+                    setStatusMessage(
+                        result->removedOldBackups > 0
+                            ? QStringLiteral("备份完成，并清理 %1 份过期备份")
+                                  .arg(result->removedOldBackups)
+                            : QStringLiteral("备份完成"));
+                    if (!automatic && !m_quitAfterBackup && isVisible()) {
+                        QMessageBox::information(
+                            this,
+                            QStringLiteral("备份完成"),
+                            QStringLiteral("夜航已建立可独立恢复的本地备份：\n%1")
+                                .arg(cleaned));
+                    }
+                } else {
+                    setStatusMessage(QStringLiteral("今日自动备份已经就绪"));
+                }
+
+                if (m_quitAfterBackup) {
+                    if (m_trayIcon)
+                        m_trayIcon->hide();
+                    qApp->quit();
+                }
+            });
+    thread->start(QThread::LowPriority);
+}
+
+void MainWindow::openBackupDirectory()
+{
+    const QString directory = BackupManager(m_database->dataDirectory()).backupRoot();
+    if (!QDir().mkpath(directory)
+        || !QDesktopServices::openUrl(QUrl::fromLocalFile(directory))) {
+        setStatusMessage(QStringLiteral("无法打开备份目录"), true);
+    }
+}
+
 void MainWindow::requestQuit()
 {
     m_quitting = true;
@@ -1830,6 +1947,11 @@ void MainWindow::requestQuit()
         m_trayIcon->hide();
     QSettings settings;
     settings.setValue(QStringLiteral("main/geometry"), saveGeometry());
+    if (m_backupThread) {
+        m_quitAfterBackup = true;
+        hide();
+        return;
+    }
     qApp->quit();
 }
 

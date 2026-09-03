@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(Nocturne VERSION 0.1.3 LANGUAGES CXX)
+project(Nocturne VERSION 0.1.4 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -14,6 +14,8 @@ find_package(Qt6 6.5 REQUIRED COMPONENTS Widgets Sql)
 
 qt_add_executable(Nocturne WIN32
     src/main.cpp
+    src/BackupManager.h
+    src/BackupManager.cpp
     src/Branding.h
     src/Branding.cpp
     src/Database.h
@@ -88,6 +90,8 @@ if(BUILD_TESTING)
 
     qt_add_executable(NocturneDesktopUiTest
         tests/DesktopUiSmoke.cpp
+        src/BackupManager.h
+        src/BackupManager.cpp
         src/Branding.h
         src/Branding.cpp
         src/Database.h
@@ -118,4 +122,19 @@ if(BUILD_TESTING)
     add_test(NAME desktop_ui_smoke
              COMMAND NocturneDesktopUiTest "${CMAKE_CURRENT_BINARY_DIR}/ui-smoke")
     set_tests_properties(desktop_ui_smoke PROPERTIES TIMEOUT 60 RUN_SERIAL TRUE)
+
+    qt_add_executable(NocturneBackupTest
+        tests/BackupSmoke.cpp
+        src/BackupManager.h
+        src/BackupManager.cpp
+        src/Database.h
+        src/Database.cpp
+    )
+    target_include_directories(NocturneBackupTest PRIVATE src)
+    target_link_libraries(NocturneBackupTest PRIVATE Qt6::Sql)
+    target_compile_definitions(NocturneBackupTest PRIVATE
+        NOCTURNE_VERSION="${PROJECT_VERSION}"
+    )
+    add_test(NAME backup_smoke COMMAND NocturneBackupTest)
+    set_tests_properties(backup_smoke PROPERTIES TIMEOUT 60)
 endif()

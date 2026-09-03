@@ -68,7 +68,7 @@ int main(int argc, char* argv[])
     }
 
     MainWindow window(&database);
-    window.setProperty("suppressTrayNotifications", benchmarkProfile);
+    window.setProperty("suppressTrayNotifications", benchmarkProfile || testProfile);
     window.show();
     if (startupBenchmark)
         QTimer::singleShot(2500, &app, &QCoreApplication::quit);

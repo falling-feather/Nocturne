@@ -2,7 +2,7 @@
 
 夜航（Nocturne）是一款面向 Windows 的本地轻量笔记原型，品牌标语是“所见所思，杂而成章。”它使用 C++17、Qt 6 Widgets 与 SQLite，目标是在大型游戏或其他高负载应用运行时也能常驻，并可随时用 `Ctrl+Alt+N` 呼出快速便签。
 
-> 当前桌面原型版本为 `0.1.3`，已完成多枚桌面便签、每枚便签独立置顶/透明度/位置记忆、扁平化界面和可重复性能基线。它仍不是可托管重要资料的正式版本。首次测试前请先阅读[数据与备份](#数据与备份)和[原型方案与边界](docs/prototype-plan.md)。
+> 当前桌面原型版本为 `0.1.4`，已完成多便签、按需正文、扁平化界面、可重复性能基线，以及数据库与附件的一致性本地备份。它仍不是可托管重要资料的正式版本。首次测试前请先阅读[数据与备份](#数据与备份)和[原型方案与边界](docs/prototype-plan.md)。
 
 项目当前实现、任务与提交历史分别以 [`doc/01-开发者文档.md`](doc/01-开发者文档.md)、[`doc/02-项目规划.md`](doc/02-项目规划.md) 和 [`doc/03-开发历史.md`](doc/03-开发历史.md) 为权威入口；竞品矩阵与差异化方向见 [`doc/04-竞品调研与差异化方向.md`](doc/04-竞品调研与差异化方向.md)。本文继续作为构建、测试和备份的兼容入口。
 
@@ -21,6 +21,7 @@
 | 待办 | 新增、切换完成状态、清理已完成项目 |
 | 后台驻留 | 关闭主窗口后驻留系统托盘；需要从托盘执行“退出”才会完全结束进程 |
 | 本地存储 | SQLite schema v3、WAL 与本地 `attachments`；升级时原位移除 v2 的单便签限制并保留旧记录/设置；无账号、无云同步 |
+| 本地备份 | 文件菜单可立即备份或打开备份目录；启动后延迟执行每日一次后台备份；每份包含一致性 SQLite 快照、附件副本和 JSON 清单，自动/手动分别保留 7/10 份 |
 
 程序采用单实例运行。如果夜航已经在后台运行，再次启动不会创建第二个数据库连接；请使用快捷键或托盘图标唤回。
 
@@ -33,7 +34,7 @@
 & "$env:LOCALAPPDATA\NocturnePrototypeBuild\Release\Nocturne.exe"
 ```
 
-构建脚本同时运行持久化迁移、600 篇数据库性能和真实 QWidget 桌面 UI 三项测试。需要跳过时可加 `-SkipTests`。不要在同一构建目录中混用 MSVC、MinGW 或不同 ABI 的 Qt。
+构建脚本同时运行持久化迁移、600 篇数据库性能、真实 QWidget 桌面 UI 和本地备份四项测试。需要跳过时可加 `-SkipTests`。不要在同一构建目录中混用 MSVC、MinGW 或不同 ABI 的 Qt。
 
 ## 打包可测试目录
 
@@ -41,7 +42,7 @@
 
 ```powershell
 .\build.ps1 -Configuration Release -Package
-& .\dist\Nocturne-0.1.3-portable\Nocturne.exe
+& .\dist\Nocturne-0.1.4-portable\Nocturne.exe
 ```
 
 MSYS2 版本的 `windeployqt` 没有完整复制 UCRT64 的非 Qt 依赖，因此仓库的打包脚本会递归扫描所选 EXE、Qt DLL 和插件，并只收集实际引用的 UCRT64 DLL。脚本不会把个人笔记打进发布目录。本轮生成的便携包已在不向 `PATH` 加入 Qt 的情况下独立启动，并完成 SQLite 重启恢复验证。
@@ -49,54 +50,39 @@ MSYS2 版本的 `windeployqt` 没有完整复制 UCRT64 的非 Qt 依赖，因�
 
 ## 本轮验证快照
 
-- Release 构建与链接通过；CTest 包含持久化/迁移、600 篇数据库性能和真实桌面 UI 三项回归。多便签测试会实际点击两次入口、写入两段不同内容、核对不同数据库 ID，验证独立置顶与 `72%/96%` 透明度，再销毁并按 ID 重建窗口确认配置仍不串号。
+- Release 构建与链接通过；CTest `4/4` 包含持久化/迁移、600 篇数据库性能、真实桌面 UI 和本地备份回归。备份测试会重新打开快照读回原笔记，核对嵌套附件和清单，并验证同日限频与安全保留边界。
 - 约 `21.5 MiB`、600 篇且混有大正文/图片引用的样本中，多轮摘要查询中位数约 `29—36 ms`、P95 约 `32—45 ms`；按 ID 读取所选正文中位数约 `0.09—0.13 ms`、P95 约 `0.18—0.20 ms`。
 - 四轮便携包启动中，去掉首轮后的主窗口可用时间中位数约 `1.09 s`；已驻留进程内新开便签的两轮样本落在 `117—184 ms`。隐藏到托盘并稳定后的 700 ms 采样窗 CPU 为 `0 ms`，符合事件驱动预期。
 - 删除装饰背景位图及其双份像素缓存后，可见主窗口稳定私有内存约 `112.3 MiB`、工作集约 `174.2 MiB`；隐藏到托盘后约 `114.5—115.0 MiB` 私有内存、`166.9—167.6 MiB` 工作集。隐藏时还会清空当前排版文档、图片资源和正文缓存，以限制内容增长；Qt 基础堆不会立刻归还系统，因此这轮不能宣称已经达到“极小内存”。若正式目标要求显著低于 `100 MiB`，需要做托盘控制器/主 UI 生命周期拆分，或纯 Win32/DirectWrite A/B 样机。
 - UI 回归使用隔离应用目录和真实 QWidget backing-store 截图，不触碰正常用户数据；实现截图见 [`doc/image/Nocturne-v013-implementation-main.png`](doc/image/Nocturne-v013-implementation-main.png) 与 [`doc/image/Nocturne-v013-implementation-sticky.png`](doc/image/Nocturne-v013-implementation-sticky.png)。
-- `Nocturne.exe` 的产品名、文件说明和版本资源为“夜航 · Nocturne”与 `0.1.3`；独立便携包为 `36` 个文件、`76.2 MiB`，未追加开发工具链 PATH 时可启动并按基准参数自行退出。
+- Release `Nocturne.exe` 的产品名、文件说明和版本资源为“夜航 · Nocturne”与 `0.1.4`；便携目录版本继续由 CMake 自动驱动，不另设手工版本号。
 
 ## 数据与备份
 
-应用使用 Qt 的 `QStandardPaths::AppLocalDataLocation`。为保证从 `V0.1.1` 原位升级后仍能读取既有笔记，`V0.1.2` 只改变显示品牌和可执行文件名，`V0.1.3` 继续沿用相同内部存储身份；组织名与应用名仍为 `FeatherNote`，因此 Windows 上的典型数据根目录仍为：
+应用使用 Qt 的 `QStandardPaths::AppLocalDataLocation`。为保证从 `V0.1.1` 原位升级后仍能读取既有笔记，后续版本继续沿用相同内部存储身份；组织名与应用名仍为 `FeatherNote`，因此 Windows 上的典型数据根目录仍为：
 
 ```text
 %LOCALAPPDATA%\FeatherNote\FeatherNote\
 ```
 
-其中数据库文件为 `notebook.sqlite3`，插入的图片保存在同一数据根目录下的 `attachments`。程序运行时还可能出现 SQLite 的 `notebook.sqlite3-wal` 和 `notebook.sqlite3-shm`；不要只复制主数据库文件来做在线备份。
+其中数据库文件为 `notebook.sqlite3`，插入的图片保存在同一数据根目录下的 `attachments`。程序运行时还可能出现 SQLite 的 `notebook.sqlite3-wal` 和 `notebook.sqlite3-shm`；不要直接复制正在使用的主数据库文件来冒充一致性备份。
 
-当前原型**没有自动备份**。建议测试前完全退出夜航，再复制整个数据目录：
+`V0.1.4` 启动约五秒后在独立后台线程尝试每日备份，同一自然日已有成功备份时不会重复。也可以使用“文件 → 立即备份本地资料”；“文件 → 打开备份目录”会打开数据根下的 `backups`。每个 `NocturneBackup-*` 目录包含：
 
-```powershell
-$running = Get-Process -Name Nocturne, FeatherNote -ErrorAction SilentlyContinue
-if ($running) {
-  throw "夜航仍在运行；请先从系统托盘完全退出。"
-}
+- `notebook.sqlite3`：通过 SQLite `VACUUM INTO` 在线生成、并经 `PRAGMA quick_check` 复核的单文件快照；
+- `attachments/`：创建快照时的本地附件副本；
+- `backup.json`：应用版本、时间、schema、文件数和字节数清单。
 
-$dataDir = Join-Path $env:LOCALAPPDATA "FeatherNote\FeatherNote"
-if (-not (Test-Path -LiteralPath $dataDir)) {
-  throw "尚未找到数据目录；请先启动一次夜航。"
-}
-
-$backupRoot = Join-Path $env:USERPROFILE "Documents\Nocturne-Backups"
-$backupDir = Join-Path $backupRoot (Get-Date -Format "yyyyMMdd-HHmmss")
-New-Item -ItemType Directory -Path $backupDir -Force | Out-Null
-Copy-Item -LiteralPath $dataDir -Destination (Join-Path $backupDir "data") -Recurse
-
-Get-ChildItem -LiteralPath (Join-Path $backupDir "data") -Force
-```
-
-恢复时也必须先从托盘完全退出程序；先给现有数据目录再做一份副本，然后用某个备份中的完整 `data` 目录替换数据目录，启动后核对笔记、图片和待办。备份是未加密的本地资料副本，不应上传到不可信位置。
+自动备份保留最近 7 份，手动备份保留最近 10 份；程序只清理由夜航命名、带有效清单且不是符号链接的同类目录。恢复仍必须先从托盘完全退出夜航：先另存当前数据，再把目标备份的 `notebook.sqlite3` 与 `attachments` 复制回数据根，启动后核对笔记、图片和待办。备份与原笔记同样未加密，不应上传到不可信位置。
 
 ## 已知边界
 
 - 仅面向 Windows；全局快捷键依赖 Windows 系统能力，若已被其他程序占用，可能无法注册。
 - Markdown、HTML 与富文本模型不完全等价，导入再导出可能丢失原型不支持的样式或结构。
-- 尚不支持 DOCX、云同步、多人协作、加密、提醒通知和自动备份；当前只承诺 `0.1.0` 原型至 schema v3 的逐级原位迁移路径。
+- 尚不支持 DOCX、云同步、多人协作、加密、提醒通知和在线一键恢复；当前只承诺 `0.1.0` 原型至 schema v3 的逐级原位迁移路径。
 - 图片已初步外置保存，但正式版的附件去重、移动、孤儿清理和一致性恢复规则仍在规划中。
 - 当前基线是开发机短时回归而非跨机器、长时间正式验收；目标、口径与“目标/实测”分栏见[原型方案](docs/prototype-plan.md#8-性能验收目标)。
 
 ## 下一步
 
-本轮电脑端实现已形成 `V0.1.3` 可追踪版本。依据[竞品调研](doc/04-竞品调研与差异化方向.md)，下一步优先候选是崩溃安全备份、“便签入册”、可选择的“灵感航迹”、附件去重/孤儿恢复，以及多显示器、高 DPI 和窄窗口回归；手机端和网络同步仍保持暂缓。详细任务状态见[项目规划](doc/02-项目规划.md)。
+本轮电脑端实现已形成 `V0.1.4` 可追踪版本。下一项已由项目负责人指定为 `V0.1.5 / DEV-005`“收舟入册”：把多枚便签汇集为一篇正式笔记；之后是 `V0.1.6 / DEV-006` 可配置全局快捷键与冲突检测。手机端和网络同步仍保持暂缓。详细任务状态见[项目规划](doc/02-项目规划.md)。

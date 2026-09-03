@@ -24,6 +24,7 @@ class QMenuBar;
 class QPoint;
 class QPushButton;
 class QSystemTrayIcon;
+class QThread;
 class QTimer;
 class QToolButton;
 
@@ -95,6 +96,9 @@ private:
     void restorePinnedStickies();
     void summonSticky();
     void showMainWindow();
+    void scheduleAutomaticBackup();
+    void startBackup(bool automatic);
+    void openBackupDirectory();
     void requestQuit();
     void toggleMaximized();
     void updateWindowChrome();
@@ -116,6 +120,7 @@ private:
     bool m_trayHintShown = false;
     bool m_contentSuspended = false;
     bool m_resumeQueued = false;
+    bool m_quitAfterBackup = false;
 
     QCache<qint64, NoteRecord> m_noteCache;
 
@@ -148,4 +153,5 @@ private:
     QSystemTrayIcon* m_trayIcon = nullptr;
     QMenu* m_trayMenu = nullptr;
     GlobalHotkey* m_globalHotkey = nullptr;
+    QThread* m_backupThread = nullptr;
 };
