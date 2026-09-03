@@ -56,6 +56,7 @@ private:
     void scheduleSave();
     void createNote();
     void collectStickies();
+    void configureGlobalHotkey();
     void renameCurrentNote();
     void deleteCurrentNote();
     void showNoteContextMenu(const QPoint& position);
@@ -100,6 +101,8 @@ private:
     void scheduleAutomaticBackup();
     void startBackup(bool automatic);
     void openBackupDirectory();
+    void updateGlobalHotkeyPresentation();
+    QString globalHotkeyText() const;
     void requestQuit();
     void toggleMaximized();
     void updateWindowChrome();
@@ -153,6 +156,7 @@ private:
     QList<StickyNoteWindow*> m_stickyWindows;
     QSystemTrayIcon* m_trayIcon = nullptr;
     QMenu* m_trayMenu = nullptr;
+    QAction* m_trayStickyAction = nullptr;
     GlobalHotkey* m_globalHotkey = nullptr;
     QThread* m_backupThread = nullptr;
 };

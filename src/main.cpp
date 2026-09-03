@@ -1,5 +1,6 @@
 #include "Branding.h"
 #include "Database.h"
+#include "GlobalHotkey.h"
 #include "MainWindow.h"
 
 #include <QApplication>
@@ -7,6 +8,7 @@
 #include <QFont>
 #include <QLockFile>
 #include <QMessageBox>
+#include <QSettings>
 #include <QStandardPaths>
 #include <QTimer>
 
@@ -51,10 +53,20 @@ int main(int argc, char* argv[])
                        : QStringLiteral("FeatherNotePrototype.lock"))));
     instanceLock.setStaleLockTime(0);
     if (!instanceLock.tryLock(100)) {
+        QSettings settings;
+        QKeySequence configured(
+            settings.value(GlobalHotkey::settingsKey(),
+                           GlobalHotkey::portableText(GlobalHotkey::defaultSequence()))
+                .toString(),
+            QKeySequence::PortableText);
+        QString validationError;
+        if (!GlobalHotkey::validate(configured, &validationError))
+            configured = GlobalHotkey::defaultSequence();
         QMessageBox::information(nullptr,
                                  QStringLiteral("夜航已在运行"),
                                  QStringLiteral("夜航已经在后台运行。\n"
-                                                "请按 Ctrl+Alt+N 新建桌面便签，或从系统托盘打开主窗口。"));
+                                                "请按 %1 新建桌面便签，或从系统托盘打开主窗口。")
+                                     .arg(GlobalHotkey::displayText(configured)));
         return 0;
     }
 

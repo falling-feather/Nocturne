@@ -3,12 +3,12 @@
 #include "BackupManager.h"
 #include "Branding.h"
 #include "Database.h"
+#include "GlobalHotkey.h"
 #include "NoteEditor.h"
 #include "NocturneStyle.h"
 #include "StickyNoteWindow.h"
 #include "WindowChrome.h"
 
-#include <QAbstractNativeEventFilter>
 #include <QAbstractItemView>
 #include <QAction>
 #include <QApplication>
@@ -35,6 +35,7 @@
 #include <QImageReader>
 #include <QImageWriter>
 #include <QInputDialog>
+#include <QKeySequenceEdit>
 #include <QKeySequence>
 #include <QLabel>
 #include <QLineEdit>
@@ -69,19 +70,13 @@
 #include <QtMath>
 
 #include <algorithm>
-#include <functional>
 #include <memory>
-
-#ifdef Q_OS_WIN
-#  include <windows.h>
-#endif
 
 namespace {
 constexpr int kAutoSaveDelayMs = 650;
 constexpr int kSearchDelayMs = 180;
 constexpr int kMaxStoredImageSide = 1800;
 constexpr int kNoteCacheMaxKiB = 24 * 1024;
-constexpr int kHotkeyId = 0xF34A;
 
 QString noteListText(const QString& title,
                      const QString& excerpt,
@@ -116,59 +111,6 @@ QString databaseErrorText(const QString& action, const QString& error)
 }
 }
 
-class GlobalHotkey final : public QObject, public QAbstractNativeEventFilter
-{
-public:
-    GlobalHotkey(WId windowId, std::function<void()> callback, QObject* parent)
-        : QObject(parent)
-        , m_windowId(windowId)
-        , m_callback(std::move(callback))
-    {
-        qApp->installNativeEventFilter(this);
-#ifdef Q_OS_WIN
-        m_registered = RegisterHotKey(reinterpret_cast<HWND>(m_windowId),
-                                      kHotkeyId,
-                                      MOD_CONTROL | MOD_ALT | MOD_NOREPEAT,
-                                      'N');
-#endif
-    }
-
-    ~GlobalHotkey() override
-    {
-#ifdef Q_OS_WIN
-        if (m_registered)
-            UnregisterHotKey(reinterpret_cast<HWND>(m_windowId), kHotkeyId);
-#endif
-        if (qApp)
-            qApp->removeNativeEventFilter(this);
-    }
-
-    bool isRegistered() const { return m_registered; }
-
-    bool nativeEventFilter(const QByteArray& eventType, void* message, qintptr* result) override
-    {
-        Q_UNUSED(eventType)
-        Q_UNUSED(result)
-#ifdef Q_OS_WIN
-        const MSG* nativeMessage = static_cast<const MSG*>(message);
-        if (nativeMessage && nativeMessage->message == WM_HOTKEY
-            && nativeMessage->wParam == kHotkeyId) {
-            if (m_callback)
-                m_callback();
-            return true;
-        }
-#else
-        Q_UNUSED(message)
-#endif
-        return false;
-    }
-
-private:
-    WId m_windowId = 0;
-    std::function<void()> m_callback;
-    bool m_registered = false;
-};
-
 MainWindow::MainWindow(Database* database, QWidget* parent)
     : QMainWindow(parent, Qt::Window | Qt::FramelessWindowHint)
     , m_database(database)
@@ -188,9 +130,28 @@ MainWindow::MainWindow(Database* database, QWidget* parent)
     buildTray();
     restoreWindowState();
 
-    m_globalHotkey = new GlobalHotkey(winId(), [this] { summonSticky(); }, this);
+    QSettings settings;
+    QKeySequence configuredSequence(
+        settings.value(GlobalHotkey::settingsKey(),
+                       GlobalHotkey::portableText(GlobalHotkey::defaultSequence()))
+            .toString(),
+        QKeySequence::PortableText);
+    QString hotkeyValidationError;
+    if (!GlobalHotkey::validate(configuredSequence, &hotkeyValidationError)) {
+        configuredSequence = GlobalHotkey::defaultSequence();
+        settings.setValue(GlobalHotkey::settingsKey(),
+                          GlobalHotkey::portableText(configuredSequence));
+    }
+    m_globalHotkey = new GlobalHotkey(winId(),
+                                      configuredSequence,
+                                      [this] { summonSticky(); },
+                                      this);
+    updateGlobalHotkeyPresentation();
     if (!m_globalHotkey->isRegistered()) {
-        setStatusMessage(QStringLiteral("Ctrl+Alt+N 已被其他程序占用；仍可用界面按钮呼出便签"), true);
+        setStatusMessage(
+            QStringLiteral("%1 已被其他程序占用；可在“管理 → 唤笺快捷键”中更换")
+                .arg(globalHotkeyText()),
+            true);
     }
 
     refreshFolders();
@@ -337,7 +298,9 @@ void MainWindow::buildUi()
     m_stickyButton = new QPushButton(QStringLiteral("便签"), navigation);
     m_stickyButton->setObjectName(QStringLiteral("secondaryButton"));
     m_stickyButton->setMinimumHeight(40);
-    m_stickyButton->setToolTip(QStringLiteral("全局快捷键：Ctrl+Alt+N"));
+    m_stickyButton->setToolTip(
+        QStringLiteral("全局快捷键：%1")
+            .arg(GlobalHotkey::displayText(GlobalHotkey::defaultSequence())));
     noteButtonRow->addWidget(m_newNoteButton, 1);
     noteButtonRow->addWidget(m_stickyButton);
     navigationLayout->addLayout(noteButtonRow);
@@ -571,6 +534,9 @@ void MainWindow::buildMenus()
     collectAction->setObjectName(QStringLiteral("collectStickiesAction"));
     collectAction->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+B")));
     manageMenu->addSeparator();
+    QAction* hotkeyAction = manageMenu->addAction(QStringLiteral("唤笺快捷键…"));
+    hotkeyAction->setObjectName(QStringLiteral("hotkeySettingsAction"));
+    manageMenu->addSeparator();
     QAction* newFolderAction = manageMenu->addAction(QStringLiteral("新建分组…"));
     newFolderAction->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+G")));
     QAction* renameFolderAction = manageMenu->addAction(QStringLiteral("重命名当前分组…"));
@@ -581,7 +547,7 @@ void MainWindow::buildMenus()
     connect(shortcutHelp, &QAction::triggered, this, [this] {
         QMessageBox::information(this,
                                  QStringLiteral("夜航快捷键"),
-                                 QStringLiteral("Ctrl+Alt+N　全局新建桌面便签\n"
+                                 QStringLiteral("%1　全局新建桌面便签\n"
                                                 "Ctrl+Shift+N　窗口内新建桌面便签\n"
                                                 "Ctrl+N　　　新建笔记\n"
                                                 "Ctrl+O　　　导入文档\n"
@@ -590,7 +556,8 @@ void MainWindow::buildMenus()
                                                 "Ctrl+Shift+G　新建分组\n"
                                                 "F2　　　　　重命名当前笔记\n"
                                                 "Ctrl+B / I / U　文字格式\n"
-                                                "Ctrl+Shift+S　导出当前笔记"));
+                                                "Ctrl+Shift+S　导出当前笔记")
+                                     .arg(globalHotkeyText()));
     });
     QAction* backupHelp = helpMenu->addAction(QStringLiteral("备份与恢复说明"));
     connect(backupHelp, &QAction::triggered, this, [this] {
@@ -614,6 +581,7 @@ void MainWindow::buildMenus()
     connect(imageAction, &QAction::triggered, this, &MainWindow::chooseImages);
     connect(stickyAction, &QAction::triggered, this, &MainWindow::summonSticky);
     connect(collectAction, &QAction::triggered, this, &MainWindow::collectStickies);
+    connect(hotkeyAction, &QAction::triggered, this, &MainWindow::configureGlobalHotkey);
     connect(newFolderAction, &QAction::triggered, this, &MainWindow::createFolder);
     connect(renameFolderAction, &QAction::triggered, this, &MainWindow::renameSelectedFolder);
     connect(deleteFolderAction, &QAction::triggered, this, &MainWindow::deleteSelectedFolder);
@@ -625,17 +593,20 @@ void MainWindow::buildTray()
         return;
 
     m_trayIcon = new QSystemTrayIcon(NocturneBrand::appIcon(), this);
-    m_trayIcon->setToolTip(QStringLiteral("夜航 · Nocturne · Ctrl+Alt+N 新建桌面便签"));
+    m_trayIcon->setToolTip(QStringLiteral("夜航 · Nocturne · %1 新建桌面便签")
+                               .arg(globalHotkeyText()));
     m_trayMenu = new QMenu(this);
     m_trayMenu->setObjectName(QStringLiteral("trayMenu"));
     QAction* openAction = m_trayMenu->addAction(QStringLiteral("打开夜航"));
-    QAction* stickyAction = m_trayMenu->addAction(QStringLiteral("新建桌面便签　Ctrl+Alt+N"));
+    m_trayStickyAction = m_trayMenu->addAction(
+        QStringLiteral("新建桌面便签　%1").arg(globalHotkeyText()));
+    m_trayStickyAction->setObjectName(QStringLiteral("trayStickyAction"));
     m_trayMenu->addSeparator();
     QAction* quitAction = m_trayMenu->addAction(QStringLiteral("退出"));
     m_trayIcon->setContextMenu(m_trayMenu);
 
     connect(openAction, &QAction::triggered, this, &MainWindow::showMainWindow);
-    connect(stickyAction, &QAction::triggered, this, &MainWindow::summonSticky);
+    connect(m_trayStickyAction, &QAction::triggered, this, &MainWindow::summonSticky);
     connect(quitAction, &QAction::triggered, this, &MainWindow::requestQuit);
     connect(m_trayIcon, &QSystemTrayIcon::activated, this,
             [this](QSystemTrayIcon::ActivationReason reason) {
@@ -643,6 +614,31 @@ void MainWindow::buildTray()
                     showMainWindow();
             });
     m_trayIcon->show();
+}
+
+QString MainWindow::globalHotkeyText() const
+{
+    const QKeySequence sequence = m_globalHotkey
+        ? m_globalHotkey->sequence()
+        : GlobalHotkey::defaultSequence();
+    return GlobalHotkey::displayText(sequence);
+}
+
+void MainWindow::updateGlobalHotkeyPresentation()
+{
+    const QString hotkey = globalHotkeyText();
+    if (m_stickyButton) {
+        m_stickyButton->setToolTip(
+            QStringLiteral("全局快捷键：%1").arg(hotkey));
+    }
+    if (m_trayStickyAction) {
+        m_trayStickyAction->setText(
+            QStringLiteral("新建桌面便签　%1").arg(hotkey));
+    }
+    if (m_trayIcon) {
+        m_trayIcon->setToolTip(
+            QStringLiteral("夜航 · Nocturne · %1 新建桌面便签").arg(hotkey));
+    }
 }
 
 void MainWindow::applyTheme()
@@ -679,6 +675,19 @@ void MainWindow::applyTheme()
         QDialog#collectStickiesDialog QLabel#collectHint { color: #71695D; }
         QDialog#collectStickiesDialog QLabel#collectFormLabel {
             color: #554A3B; font-weight: 600;
+        }
+        QDialog#hotkeyDialog QLabel#hotkeyEyebrow {
+            color: #A04B3C; font-size: 9px; font-weight: 700; letter-spacing: 1px;
+        }
+        QDialog#hotkeyDialog QLabel#hotkeyHeading { color: #172A40; }
+        QDialog#hotkeyDialog QLabel#hotkeyFormLabel {
+            color: #554A3B; font-weight: 600;
+        }
+        QDialog#hotkeyDialog QLabel#hotkeyHint,
+        QDialog#hotkeyDialog QLabel#hotkeyValidationLabel { color: #71695D; }
+        QKeySequenceEdit#hotkeySequenceEdit QLineEdit {
+            background: #FAEED8; color: #182B40; border: 0;
+            border-bottom: 2px solid #A98654; padding: 10px 8px;
         }
         QListWidget#collectStickyList {
             background: #FAEED8; color: #263247; border: 1px solid #CBB894;
@@ -936,18 +945,21 @@ void MainWindow::ensureFirstNote()
         return;
     }
 
+    const QString hotkey = globalHotkeyText().toHtmlEscaped();
     const QString html = QStringLiteral(
         "<h1>欢迎登上夜航</h1>"
         "<p><i>所见所思，杂而成章。</i></p>"
         "<p>夜航是一款 <b>C++ 原生桌面笔记原型</b>。它把常用记录能力收在一个轻巧的工作流里：</p>"
         "<ul><li>正文支持富文本、列表，以及图片拖放和粘贴；</li>"
         "<li>右侧可以快速维护日常待办；</li>"
-        "<li>按 <b>Ctrl+Alt+N</b>，随时呼出置顶便签；</li>"
+        "<li>按 <b>%1</b>，随时呼出置顶便签；</li>"
         "<li>输入会在短暂停顿后自动保存到本机 SQLite。</li></ul>"
-        "<p>现在就删掉这段文字，记下你的第一个游戏灵感吧。</p>");
+        "<p>现在就删掉这段文字，记下你的第一个游戏灵感吧。</p>")
+                             .arg(hotkey);
     const QString plain = QStringLiteral(
         "欢迎登上夜航\n所见所思，杂而成章。\n这是 C++ 原生桌面笔记原型。\n"
-        "正文支持富文本、列表、图片拖放和粘贴；右侧可维护待办；Ctrl+Alt+N 呼出便签。\n");
+        "正文支持富文本、列表、图片拖放和粘贴；右侧可维护待办；%1 呼出便签。\n")
+                              .arg(globalHotkeyText());
     m_database->createNote(QStringLiteral("欢迎登上夜航"), html, plain, &error);
     if (!error.isEmpty())
         setStatusMessage(databaseErrorText(QStringLiteral("创建欢迎笔记失败"), error), true);
@@ -1379,6 +1391,126 @@ void MainWindow::collectStickies()
     setStatusMessage(QStringLiteral("已将 %1 枚便签收入“%2”")
                          .arg(selectedIds.size())
                          .arg(titleEdit->text().simplified()));
+}
+
+void MainWindow::configureGlobalHotkey()
+{
+    if (!m_globalHotkey)
+        return;
+
+    QDialog dialog(this);
+    dialog.setObjectName(QStringLiteral("hotkeyDialog"));
+    dialog.setWindowTitle(QStringLiteral("唤笺快捷键 · 夜航"));
+    dialog.setWindowIcon(NocturneBrand::appIcon());
+    dialog.resize(540, 360);
+    auto* layout = new QVBoxLayout(&dialog);
+    layout->setContentsMargins(28, 24, 28, 22);
+    layout->setSpacing(12);
+
+    auto* eyebrow = new QLabel(QStringLiteral("NOCTURNE · SUMMON"), &dialog);
+    eyebrow->setObjectName(QStringLiteral("hotkeyEyebrow"));
+    layout->addWidget(eyebrow);
+    auto* heading = new QLabel(QStringLiteral("唤笺快捷键"), &dialog);
+    heading->setObjectName(QStringLiteral("hotkeyHeading"));
+    QFont headingFont(NocturneUi::serifFamily(), 22);
+    headingFont.setWeight(QFont::DemiBold);
+    heading->setFont(headingFont);
+    layout->addWidget(heading);
+    auto* hint = new QLabel(
+        QStringLiteral("按下一个组合键，用于在其他应用或游戏前台时新建桌面便签。"),
+        &dialog);
+    hint->setObjectName(QStringLiteral("hotkeyHint"));
+    hint->setWordWrap(true);
+    layout->addWidget(hint);
+
+    auto* form = new QFormLayout;
+    form->setHorizontalSpacing(16);
+    auto* sequenceLabel = new QLabel(QStringLiteral("全局组合"), &dialog);
+    sequenceLabel->setObjectName(QStringLiteral("hotkeyFormLabel"));
+    auto* sequenceEdit = new QKeySequenceEdit(m_globalHotkey->sequence(), &dialog);
+    sequenceEdit->setObjectName(QStringLiteral("hotkeySequenceEdit"));
+    sequenceEdit->setMaximumSequenceLength(1);
+    sequenceEdit->setClearButtonEnabled(true);
+    form->addRow(sequenceLabel, sequenceEdit);
+    layout->addLayout(form);
+
+    auto* validationLabel = new QLabel(&dialog);
+    validationLabel->setObjectName(QStringLiteral("hotkeyValidationLabel"));
+    validationLabel->setWordWrap(true);
+    validationLabel->setMinimumHeight(42);
+    layout->addWidget(validationLabel);
+
+    auto* utilityRow = new QHBoxLayout;
+    auto* currentLabel = new QLabel(
+        QStringLiteral("当前绑定：%1").arg(globalHotkeyText()), &dialog);
+    currentLabel->setObjectName(QStringLiteral("hotkeyHint"));
+    utilityRow->addWidget(currentLabel, 1);
+    auto* resetButton = new QPushButton(QStringLiteral("恢复默认"), &dialog);
+    resetButton->setObjectName(QStringLiteral("quietButton"));
+    utilityRow->addWidget(resetButton);
+    layout->addLayout(utilityRow);
+    layout->addStretch(1);
+
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Save
+                                             | QDialogButtonBox::Cancel,
+                                         &dialog);
+    QPushButton* saveButton = buttons->button(QDialogButtonBox::Save);
+    saveButton->setText(QStringLiteral("应用快捷键"));
+    saveButton->setObjectName(QStringLiteral("hotkeyApplyButton"));
+    buttons->button(QDialogButtonBox::Cancel)->setText(QStringLiteral("取消"));
+    layout->addWidget(buttons);
+
+    const auto showValidation = [validationLabel, saveButton](
+                                    const QKeySequence& sequence) {
+        QString validationError;
+        const bool valid = GlobalHotkey::validate(sequence, &validationError);
+        validationLabel->setText(
+            valid ? QStringLiteral("组合有效；应用时会检查是否已被其他程序占用。")
+                  : validationError);
+        validationLabel->setStyleSheet(
+            valid ? QString() : QStringLiteral("color: #A33E34;"));
+        saveButton->setEnabled(valid);
+    };
+    connect(sequenceEdit, &QKeySequenceEdit::keySequenceChanged, &dialog,
+            [showValidation](const QKeySequence& sequence) {
+                showValidation(sequence);
+            });
+    connect(resetButton, &QPushButton::clicked, &dialog,
+            [sequenceEdit] { sequenceEdit->setKeySequence(GlobalHotkey::defaultSequence()); });
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    connect(saveButton, &QPushButton::clicked, &dialog,
+            [this, &dialog, sequenceEdit, validationLabel] {
+                const QKeySequence previous = m_globalHotkey->sequence();
+                const QKeySequence candidate = sequenceEdit->keySequence();
+                QString error;
+                if (!m_globalHotkey->setSequence(candidate, &error)) {
+                    validationLabel->setText(error);
+                    validationLabel->setStyleSheet(QStringLiteral("color: #A33E34;"));
+                    return;
+                }
+
+                QSettings settings;
+                settings.setValue(GlobalHotkey::settingsKey(),
+                                  GlobalHotkey::portableText(candidate));
+                settings.sync();
+                if (settings.status() != QSettings::NoError) {
+                    QString restoreError;
+                    m_globalHotkey->setSequence(previous, &restoreError);
+                    validationLabel->setText(
+                        restoreError.isEmpty()
+                            ? QStringLiteral("无法写入快捷键设置；已恢复原绑定。")
+                            : QStringLiteral("无法写入设置；%1").arg(restoreError));
+                    validationLabel->setStyleSheet(QStringLiteral("color: #A33E34;"));
+                    return;
+                }
+
+                updateGlobalHotkeyPresentation();
+                setStatusMessage(QStringLiteral("全局快捷键已改为 %1")
+                                     .arg(globalHotkeyText()));
+                dialog.accept();
+            });
+    showValidation(sequenceEdit->keySequence());
+    dialog.exec();
 }
 
 void MainWindow::renameCurrentNote()
@@ -2262,7 +2394,8 @@ void MainWindow::closeEvent(QCloseEvent* event)
     if (!m_trayHintShown
         && !property("suppressTrayNotifications").toBool()) {
         m_trayIcon->showMessage(QStringLiteral("夜航仍在后台"),
-                                QStringLiteral("按 Ctrl+Alt+N 可随时新建桌面便签。"),
+                                QStringLiteral("按 %1 可随时新建桌面便签。")
+                                    .arg(globalHotkeyText()),
                                 QSystemTrayIcon::Information,
                                 2500);
         m_trayHintShown = true;

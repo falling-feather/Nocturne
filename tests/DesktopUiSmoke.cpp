@@ -1,4 +1,5 @@
 #include "Database.h"
+#include "GlobalHotkey.h"
 #include "MainWindow.h"
 #include "StickyNoteWindow.h"
 
@@ -9,15 +10,19 @@
 #include <QElapsedTimer>
 #include <QEventLoop>
 #include <QLineEdit>
+#include <QKeySequenceEdit>
+#include <QLabel>
 #include <QListWidget>
 #include <QPushButton>
 #include <QSettings>
 #include <QSlider>
 #include <QStandardPaths>
+#include <QSystemTrayIcon>
 #include <QTextEdit>
 #include <QTimer>
 #include <QToolButton>
 #include <QUuid>
+#include <QWidget>
 
 #include <cmath>
 #include <iostream>
@@ -49,10 +54,26 @@ int main(int argc, char* argv[])
             .arg(QUuid::createUuid().toString(QUuid::WithoutBraces)));
     QApplication::setQuitOnLastWindowClosed(false);
 
+    QSettings shortcutSettings;
+    shortcutSettings.setValue(
+        GlobalHotkey::settingsKey(),
+        GlobalHotkey::portableText(GlobalHotkey::defaultSequence()));
+    shortcutSettings.sync();
+
     const QString outputDirectory = argc > 1
         ? QDir::cleanPath(QString::fromLocal8Bit(argv[1]))
         : QDir::current().filePath(QStringLiteral("ui-smoke"));
     bool ok = check(QDir().mkpath(outputDirectory), "UI screenshot directory creates");
+    QString validationError;
+    ok &= check(!GlobalHotkey::validate(
+                    QKeySequence(QStringLiteral("N"), QKeySequence::PortableText),
+                    &validationError),
+                "global hotkey rejects an unmodified letter");
+    ok &= check(GlobalHotkey::validate(
+                    QKeySequence(QStringLiteral("Ctrl+Alt+F12"),
+                                 QKeySequence::PortableText),
+                    &validationError),
+                "global hotkey accepts a supported single chord");
 
     auto database = std::make_unique<Database>();
     QString error;
@@ -77,6 +98,10 @@ int main(int argc, char* argv[])
         QStringLiteral("collectStickiesAction"));
     ok &= check(collectAction != nullptr,
                 "collect-stickies action is available in the manage menu");
+    QAction* hotkeyAction = mainWindow->findChild<QAction*>(
+        QStringLiteral("hotkeySettingsAction"));
+    ok &= check(hotkeyAction != nullptr,
+                "global hotkey settings action is available in the manage menu");
 
     auto* stickyButton = mainWindow->findChild<QPushButton*>(
         QStringLiteral("secondaryButton"));
@@ -236,6 +261,97 @@ int main(int argc, char* argv[])
                     "UI collection preserves both source stickies");
     }
 
+#ifdef Q_OS_WIN
+    QString reboundHotkeyPortable;
+    QWidget blockerWindow;
+    blockerWindow.setObjectName(QStringLiteral("hotkeyConflictOwner"));
+    blockerWindow.winId();
+    std::unique_ptr<GlobalHotkey> conflictOwner;
+    QKeySequence conflictSequence;
+    for (int functionKey = 13; functionKey <= 24 && !conflictOwner; ++functionKey) {
+        const QKeySequence candidate(
+            QStringLiteral("Ctrl+Alt+Shift+F%1").arg(functionKey),
+            QKeySequence::PortableText);
+        auto probe = std::make_unique<GlobalHotkey>(
+            blockerWindow.winId(), candidate, [] {});
+        if (probe->isRegistered()) {
+            conflictSequence = candidate;
+            conflictOwner = std::move(probe);
+        }
+    }
+    ok &= check(conflictOwner != nullptr,
+                "test reserves a deterministic hotkey conflict candidate");
+
+    bool hotkeyDialogInspected = false;
+    bool conflictReported = false;
+    bool oldSettingPreserved = false;
+    bool hotkeyScreenshotSaved = false;
+    const QString previousSetting = shortcutSettings.value(
+        GlobalHotkey::settingsKey()).toString();
+    if (hotkeyAction && conflictOwner) {
+        QTimer::singleShot(60, &app, [&] {
+            QDialog* dialog = mainWindow->findChild<QDialog*>(
+                QStringLiteral("hotkeyDialog"));
+            if (!dialog)
+                return;
+            auto* sequenceEdit = dialog->findChild<QKeySequenceEdit*>(
+                QStringLiteral("hotkeySequenceEdit"));
+            auto* validationLabel = dialog->findChild<QLabel*>(
+                QStringLiteral("hotkeyValidationLabel"));
+            auto* applyButton = dialog->findChild<QPushButton*>(
+                QStringLiteral("hotkeyApplyButton"));
+            hotkeyDialogInspected = sequenceEdit && validationLabel && applyButton;
+            if (!hotkeyDialogInspected) {
+                dialog->reject();
+                return;
+            }
+
+            sequenceEdit->setKeySequence(conflictSequence);
+            applyButton->click();
+            conflictReported = dialog->isVisible()
+                && validationLabel->text().contains(QStringLiteral("占用"));
+            QSettings checkSettings;
+            oldSettingPreserved = checkSettings.value(
+                GlobalHotkey::settingsKey()).toString() == previousSetting;
+            hotkeyScreenshotSaved = dialog->grab().save(
+                QDir(outputDirectory).filePath(
+                    QStringLiteral("Nocturne-v016-hotkey-conflict.png")));
+
+            conflictOwner.reset();
+            applyButton->click();
+            if (dialog->isVisible())
+                dialog->reject();
+        });
+        hotkeyAction->trigger();
+        pumpEvents();
+
+        QSettings appliedSettings;
+        const QString expected = GlobalHotkey::portableText(conflictSequence);
+        const QString applied = appliedSettings.value(
+            GlobalHotkey::settingsKey()).toString();
+        reboundHotkeyPortable = applied;
+        auto* trayStickyAction = mainWindow->findChild<QAction*>(
+            QStringLiteral("trayStickyAction"));
+        ok &= check(hotkeyDialogInspected && conflictReported,
+                    "occupied hotkey is reported without closing the settings dialog");
+        ok &= check(oldSettingPreserved,
+                    "occupied hotkey leaves the persisted setting unchanged");
+        ok &= check(hotkeyScreenshotSaved,
+                    "hotkey conflict dialog screenshot saves for visual review");
+        ok &= check(applied == expected,
+                    "same hotkey persists after the conflicting owner releases it");
+        const bool trayLabelUpdated = !QSystemTrayIcon::isSystemTrayAvailable()
+            || (trayStickyAction
+                && trayStickyAction->text().contains(
+                    GlobalHotkey::displayText(conflictSequence)));
+        ok &= check(stickyButton
+                        && stickyButton->toolTip().contains(
+                            GlobalHotkey::displayText(conflictSequence))
+                        && trayLabelUpdated,
+                    "successful rebind updates main and tray shortcut labels");
+    }
+#endif
+
     ok &= check(mainWindow->grab().save(
                     QDir(outputDirectory).filePath(
                         QStringLiteral("Nocturne-v013-implementation-main.png"))),
@@ -283,11 +399,27 @@ int main(int argc, char* argv[])
     }
 
     mainWindow.reset();
+
+#ifdef Q_OS_WIN
+    if (!reboundHotkeyPortable.isEmpty()) {
+        auto restartedWindow = std::make_unique<MainWindow>(database.get());
+        auto* restartedStickyButton = restartedWindow->findChild<QPushButton*>(
+            QStringLiteral("secondaryButton"));
+        const QKeySequence persistedSequence(reboundHotkeyPortable,
+                                             QKeySequence::PortableText);
+        ok &= check(restartedStickyButton
+                        && restartedStickyButton->toolTip().contains(
+                            GlobalHotkey::displayText(persistedSequence)),
+                    "persisted global hotkey loads into a recreated main window");
+        restartedWindow.reset();
+    }
+#endif
+
     database.reset();
     QDir(dataDirectory).removeRecursively();
 
     if (ok) {
-        std::cout << "PASS: desktop UI, multiple stickies, pin and opacity smoke test\n";
+        std::cout << "PASS: desktop UI, stickies, collection and hotkey conflict smoke test\n";
     }
     return ok ? 0 : 1;
 }

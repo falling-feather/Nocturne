@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(Nocturne VERSION 0.1.5 LANGUAGES CXX)
+project(Nocturne VERSION 0.1.6 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -20,6 +20,8 @@ qt_add_executable(Nocturne WIN32
     src/Branding.cpp
     src/Database.h
     src/Database.cpp
+    src/GlobalHotkey.h
+    src/GlobalHotkey.cpp
     src/MainWindow.h
     src/MainWindow.cpp
     src/NoteEditor.h
@@ -96,6 +98,8 @@ if(BUILD_TESTING)
         src/Branding.cpp
         src/Database.h
         src/Database.cpp
+        src/GlobalHotkey.h
+        src/GlobalHotkey.cpp
         src/MainWindow.h
         src/MainWindow.cpp
         src/NoteEditor.h
