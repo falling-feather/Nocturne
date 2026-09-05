@@ -16,3 +16,6 @@
 Thumbs.db
 Desktop.ini
 *.log
+
+# 本机诊断截图包含文件选择器中的用户目录，不进入公开仓库。
+/doc/image/Nocturne-redesign-file.png

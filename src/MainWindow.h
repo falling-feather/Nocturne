@@ -14,6 +14,11 @@ class QAction;
 class QCloseEvent;
 class QComboBox;
 class QEvent;
+class QResizeEvent;
+class QFrame;
+class QProgressBar;
+class QVBoxLayout;
+class QStackedWidget;
 class QImage;
 class QLabel;
 class QLineEdit;
@@ -39,6 +44,7 @@ public:
 protected:
     void changeEvent(QEvent* event) override;
     void closeEvent(QCloseEvent* event) override;
+    void resizeEvent(QResizeEvent* event) override;
     bool nativeEvent(const QByteArray& eventType, void* message, qintptr* result) override;
 
 private:
@@ -46,6 +52,11 @@ private:
     void buildMenus();
     void buildTray();
     void applyTheme();
+    void chooseTheme(const QString& id);
+    void toggleFocusMode();
+    void toggleTodoPanel();
+    void updateAdaptiveLayout();
+    void updateDocumentInfo();
     void connectSignals();
     void restoreWindowState();
 
@@ -129,6 +140,28 @@ private:
     QCache<qint64, NoteRecord> m_noteCache;
 
     QMenuBar* m_appMenuBar = nullptr;
+    QFrame* m_navigation = nullptr;
+    QFrame* m_todoPane = nullptr;
+    QFrame* m_formatBar = nullptr;
+    QWidget* m_writingColumn = nullptr;
+    QVBoxLayout* m_writingLayout = nullptr;
+    QStackedWidget* m_documentStack = nullptr;
+    QLabel* m_emptyHeading = nullptr;
+    QLabel* m_emptyHint = nullptr;
+    QLabel* m_noteMeta = nullptr;
+    QLabel* m_wordCountLabel = nullptr;
+    QProgressBar* m_todoProgress = nullptr;
+    QToolButton* m_focusButton = nullptr;
+    QToolButton* m_todoToggleButton = nullptr;
+    QToolButton* m_railTodoButton = nullptr;
+    QToolButton* m_themeButton = nullptr;
+    QToolButton* m_settingsButton = nullptr;
+    QToolButton* m_openStickyButton = nullptr;
+    QAction* m_focusAction = nullptr;
+    QList<QAction*> m_themeActions;
+    bool m_focusMode = false;
+    bool m_todoRequested = true;
+    bool m_narrowTodoOverride = false;
     QToolButton* m_maximizeButton = nullptr;
     QListWidget* m_noteList = nullptr;
     QLineEdit* m_searchEdit = nullptr;

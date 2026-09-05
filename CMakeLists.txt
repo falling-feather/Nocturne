@@ -26,6 +26,8 @@ qt_add_executable(Nocturne WIN32
     src/MainWindow.cpp
     src/NoteEditor.h
     src/NoteEditor.cpp
+    src/NocturneDialogs.h
+    src/NocturneDialogs.cpp
     src/NocturneStyle.h
     src/NocturneStyle.cpp
     src/StickyNoteWindow.h
@@ -104,6 +106,8 @@ if(BUILD_TESTING)
         src/MainWindow.cpp
         src/NoteEditor.h
         src/NoteEditor.cpp
+        src/NocturneDialogs.h
+        src/NocturneDialogs.cpp
         src/NocturneStyle.h
         src/NocturneStyle.cpp
         src/StickyNoteWindow.h

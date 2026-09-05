@@ -5,6 +5,7 @@
 #include <QTextEdit>
 
 class QMimeData;
+class QSyntaxHighlighter;
 
 class NoteEditor final : public QTextEdit
 {
@@ -12,6 +13,7 @@ class NoteEditor final : public QTextEdit
 
 public:
     explicit NoteEditor(QWidget* parent = nullptr);
+    void refreshTheme();
 
 signals:
     void imagePasted(const QImage& image);
@@ -20,5 +22,7 @@ signals:
 protected:
     bool canInsertFromMimeData(const QMimeData* source) const override;
     void insertFromMimeData(const QMimeData* source) override;
-};
 
+private:
+    QSyntaxHighlighter* m_contrastHighlighter = nullptr;
+};

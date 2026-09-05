@@ -3,6 +3,7 @@
 #include "Branding.h"
 #include "Database.h"
 #include "WindowChrome.h"
+#include "NocturneStyle.h"
 
 #include <QCloseEvent>
 #include <QCursor>
@@ -70,15 +71,15 @@ StickyNoteWindow::StickyNoteWindow(Database* db, qint64 noteId, QWidget* parent)
     brandIcon->setPixmap(NocturneBrand::appIcon().pixmap(24, 24));
     brandIcon->setFixedSize(26, 26);
     brandIcon->setAlignment(Qt::AlignCenter);
-    auto* title = new QLabel(QStringLiteral("夜航便签"), header);
+    auto* title = new QLabel(QStringLiteral("随手记"), header);
     title->setObjectName(QStringLiteral("stickyTitle"));
     saveHint_->setObjectName(QStringLiteral("saveHint"));
-    saveHint_->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    saveHint_->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     saveHint_->setText(QStringLiteral("已自动保存"));
 
     pinButton_ = new QToolButton(header);
     pinButton_->setObjectName(QStringLiteral("stickyPinButton"));
-    pinButton_->setText(QStringLiteral("钉"));
+    NocturneUi::setGlyph(pinButton_, NocturneUi::Glyph::Pin);
     pinButton_->setCheckable(true);
     pinButton_->setAutoRaise(true);
     pinButton_->setFocusPolicy(Qt::NoFocus);
@@ -88,7 +89,7 @@ StickyNoteWindow::StickyNoteWindow(Database* db, qint64 noteId, QWidget* parent)
 
     auto* settingsButton = new QToolButton(header);
     settingsButton->setObjectName(QStringLiteral("stickySettingsButton"));
-    settingsButton->setText(QStringLiteral("⋯"));
+    NocturneUi::setGlyph(settingsButton, NocturneUi::Glyph::More);
     settingsButton->setToolTip(QStringLiteral("便签设置"));
     settingsButton->setAutoRaise(true);
     settingsButton->setFocusPolicy(Qt::NoFocus);
@@ -96,7 +97,7 @@ StickyNoteWindow::StickyNoteWindow(Database* db, qint64 noteId, QWidget* parent)
     settingsButton->setProperty("windowChromeInteractive", true);
     auto* closeButton = new QToolButton(header);
     closeButton->setObjectName(QStringLiteral("stickyCloseButton"));
-    closeButton->setText(QStringLiteral("×"));
+    NocturneUi::setGlyph(closeButton, NocturneUi::Glyph::Close);
     closeButton->setToolTip(QStringLiteral("关闭便签"));
     closeButton->setAutoRaise(true);
     closeButton->setFocusPolicy(Qt::NoFocus);
@@ -109,7 +110,7 @@ StickyNoteWindow::StickyNoteWindow(Database* db, qint64 noteId, QWidget* parent)
     heading->addWidget(brandIcon);
     heading->addWidget(title);
     heading->addStretch(1);
-    heading->addWidget(saveHint_);
+
     heading->addWidget(pinButton_);
     heading->addWidget(settingsButton);
     heading->addWidget(closeButton);
@@ -153,6 +154,7 @@ StickyNoteWindow::StickyNoteWindow(Database* db, qint64 noteId, QWidget* parent)
 
     editor_->setObjectName(QStringLiteral("stickyEditor"));
     editor_->setAcceptRichText(false);
+    editor_->setFont(QFont(NocturneUi::sansFamily(), 12));
     editor_->setUndoRedoEnabled(true);
     editor_->setPlaceholderText(QStringLiteral("一念入舟，随手记下…"));
     editor_->setTabChangesFocus(false);
@@ -160,11 +162,12 @@ StickyNoteWindow::StickyNoteWindow(Database* db, qint64 noteId, QWidget* parent)
     auto* body = new QFrame(this);
     body->setObjectName(QStringLiteral("stickyBody"));
     auto* bodyLayout = new QVBoxLayout(body);
-    bodyLayout->setContentsMargins(14, 12, 9, 7);
-    bodyLayout->setSpacing(0);
+    bodyLayout->setContentsMargins(24, 24, 18, 12);
+    bodyLayout->setSpacing(12);
     bodyLayout->addWidget(editor_, 1);
     auto* gripRow = new QHBoxLayout;
     gripRow->setContentsMargins(0, 0, 0, 0);
+    gripRow->addWidget(saveHint_);
     gripRow->addStretch(1);
     auto* sizeGrip = new QSizeGrip(body);
     sizeGrip->setObjectName(QStringLiteral("stickySizeGrip"));
@@ -177,69 +180,6 @@ StickyNoteWindow::StickyNoteWindow(Database* db, qint64 noteId, QWidget* parent)
     layout->setSpacing(0);
     layout->addWidget(header);
     layout->addWidget(body, 1);
-
-    setStyleSheet(QStringLiteral(R"(
-        QWidget#stickyNoteWindow { background-color: #132338; }
-        QFrame#stickyHeader {
-            background-color: #132338;
-            border: 0;
-            border-bottom: 1px solid #B79A61;
-        }
-        QFrame#stickyBody { background-color: #F2E7D2; }
-        QLabel#stickyBrandIcon { background: transparent; border: 0; }
-        QLabel#stickyTitle { color: #EBCB8B; font-size: 14px; font-weight: 700; }
-        QLabel#saveHint { color: #9AA8B7; font-size: 11px; }
-        QToolButton#stickyPinButton, QToolButton#stickySettingsButton,
-        QToolButton#stickyCloseButton {
-            background: transparent;
-            color: #C7D0DA;
-            border: 0;
-            border-radius: 0;
-            padding: 0;
-            font-size: 16px;
-        }
-        QToolButton#stickyPinButton:hover, QToolButton#stickySettingsButton:hover {
-            background: #20354D;
-            color: #FFF0C7;
-        }
-        QToolButton#stickyPinButton:checked {
-            color: #E9C77E;
-            border-bottom: 2px solid #B65443;
-        }
-        QToolButton#stickySettingsButton::menu-indicator { image: none; width: 0; height: 0; }
-        QToolButton#stickyCloseButton:hover { background: #A74842; color: #FFFFFF; }
-        QMenu#stickySettingsMenu {
-            background: #F7EFE0;
-            color: #202B3B;
-            border: 1px solid #BCA98A;
-            padding: 0;
-        }
-        QWidget#opacityPanel { background: #F7EFE0; min-width: 238px; }
-        QLabel#opacityTitle { color: #202B3B; font-size: 12px; font-weight: 700; }
-        QLabel#opacityValue { color: #A34D3F; font-size: 12px; font-weight: 700; }
-        QLabel#opacityHint { color: #756E63; font-size: 10px; }
-        QSlider#opacitySlider::groove:horizontal { height: 4px; background: #CFC1AA; }
-        QSlider#opacitySlider::sub-page:horizontal { background: #A34D3F; }
-        QSlider#opacitySlider::handle:horizontal {
-            width: 14px;
-            margin: -5px 0;
-            border-radius: 7px;
-            background: #132338;
-        }
-        QTextEdit#stickyEditor {
-            color: #263141;
-            background: #F2E7D2;
-            border: 0;
-            border-radius: 0;
-            padding: 8px 9px 8px 6px;
-            selection-background-color: #A34D3F;
-            selection-color: #FFF7E8;
-            font-size: 11pt;
-        }
-        QScrollBar:vertical { background: transparent; width: 8px; margin: 2px; }
-        QScrollBar::handle:vertical { background: #B6AA99; min-height: 24px; border-radius: 0; }
-        QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
-    )"));
 
     saveTimer_->setSingleShot(true);
     saveTimer_->setInterval(kSaveDelayMs);

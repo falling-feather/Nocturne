@@ -2,7 +2,9 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$BuildDirectory,
     [ValidateSet('Release', 'Debug')]
-    [string]$Configuration = 'Release'
+    [string]$Configuration = 'Release',
+    [ValidatePattern('^$|^[A-Za-z0-9][A-Za-z0-9._-]*$')]
+    [string]$DirectoryName = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -17,7 +19,9 @@ if ($cmakeContents -notmatch 'project\s*\(Nocturne\s+VERSION\s+([0-9]+\.[0-9]+\.
     throw '无法从 CMakeLists.txt 解析夜航版本号。'
 }
 $appVersion = $Matches[1]
-$packageName = if ($Configuration -eq 'Release') {
+$packageName = if ($DirectoryName) {
+    $DirectoryName
+} elseif ($Configuration -eq 'Release') {
     "Nocturne-$appVersion-portable"
 } else {
     "Nocturne-$appVersion-debug"
@@ -91,6 +95,12 @@ do {
         }
     }
 } while ($copiedAny)
+
+# 随公开分发物带上供应商原始许可和精确版本源码包入口。
+python (Join-Path $repoRoot 'scripts\collect-runtime-notices.py') --package-dir $resolvedPackage
+if ($LASTEXITCODE -ne 0) { throw '运行库许可收集失败。' }
+Copy-Item -LiteralPath (Join-Path $repoRoot 'THIRD_PARTY_NOTICES.md') -Destination $resolvedPackage
+Copy-Item -LiteralPath (Join-Path $repoRoot 'packaging\QUICKSTART.txt') -Destination $resolvedPackage
 
 $files = Get-ChildItem -LiteralPath $resolvedPackage -Recurse -File
 $totalBytes = ($files | Measure-Object -Property Length -Sum).Sum

@@ -2,6 +2,8 @@
 #include "Database.h"
 #include "GlobalHotkey.h"
 #include "MainWindow.h"
+#include "NocturneDialogs.h"
+#include "NocturneStyle.h"
 
 #include <QApplication>
 #include <QDir>
@@ -43,6 +45,10 @@ int main(int argc, char* argv[])
     QFont appFont(QStringLiteral("Microsoft YaHei UI"));
     appFont.setPointSize(10);
     QApplication::setFont(appFont);
+    QApplication::setStyle(QStringLiteral("Fusion"));
+    NocturneUi::setTheme(QSettings().value(QStringLiteral("appearance/theme"), QStringLiteral("night")).toString());
+    NocturneUi::applyPalette();
+    app.setStyleSheet(NocturneUi::styleSheet());
 
     const QString lockDir = QStandardPaths::writableLocation(QStandardPaths::TempLocation);
     QDir().mkpath(lockDir);
@@ -62,7 +68,7 @@ int main(int argc, char* argv[])
         QString validationError;
         if (!GlobalHotkey::validate(configured, &validationError))
             configured = GlobalHotkey::defaultSequence();
-        QMessageBox::information(nullptr,
+        NocturneDialogs::information(nullptr,
                                  QStringLiteral("夜航已在运行"),
                                  QStringLiteral("夜航已经在后台运行。\n"
                                                 "请按 %1 新建桌面便签，或从系统托盘打开主窗口。")
@@ -73,7 +79,7 @@ int main(int argc, char* argv[])
     Database database;
     QString error;
     if (!database.open(&error)) {
-        QMessageBox::critical(nullptr,
+        NocturneDialogs::critical(nullptr,
                               QStringLiteral("无法打开本地数据"),
                               QStringLiteral("夜航无法初始化本地数据库：\n%1").arg(error));
         return 1;
