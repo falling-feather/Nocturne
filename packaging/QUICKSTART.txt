@@ -28,4 +28,3 @@ https://github.com/falling-feather/Nocturne
 https://github.com/falling-feather/Nocturne/releases/tag/v0.1.6
 当前为桌面原型版本，尚未进行代码签名。
 第三方许可证在 licenses/；精确版本源码入口见 THIRD_PARTY_SOURCES.md。
-

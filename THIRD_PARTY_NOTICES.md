@@ -33,4 +33,3 @@ They do not mean that every listed license applies to every shipped DLL.
 
 These notices describe third-party components; they do not assign a new license
 to Nocturne's own source code or branding.
-

@@ -37,4 +37,3 @@ QString getSaveFileName(QWidget* parent, const QString& title, const QString& di
     const QString& filter, QString* selectedFilter = nullptr);
 QColor getColor(const QColor& initial, QWidget* parent, const QString& title);
 }
-
