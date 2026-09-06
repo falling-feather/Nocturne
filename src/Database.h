@@ -37,6 +37,9 @@ struct TodoRecord {
     bool done = false;
     QDateTime dueAt;
     int sortOrder = 0;
+    qint64 noteId = 0;
+    QString anchor;
+    QString noteTitle;
 };
 
 struct NoteSourceRecord {
@@ -98,6 +101,13 @@ public:
                       const QString &name,
                       QString *error = nullptr);
     bool deleteFolder(qint64 id, QString *error = nullptr);
+    bool moveFolder(qint64 id, qint64 parentId, QString* error = nullptr);
+    qint64 importNote(const QString& sourcePath, const QByteArray& sourceHash,
+        const QString& title, const QString& html, const QString& plainText,
+        qint64 folderId, bool* skipped, QString* error = nullptr);
+    QString noteSourcePath(qint64 noteId) const;
+    qint64 ensureImportedFolder(const QString& sourcePath, const QString& name,
+        qint64 parentId, QString* error = nullptr);
 
     std::optional<NoteRecord> stickyNote(QString *error = nullptr) const;
     qint64 saveStickyNote(const QString &text, QString *error = nullptr);
@@ -107,8 +117,12 @@ public:
 
     QList<TodoRecord> listTodos(QString *error = nullptr) const;
     qint64 createTodo(const QString &text, QString *error = nullptr);
+    qint64 createLinkedTodo(qint64 noteId, int expectedRevision, const QString& text,
+        const QString& anchor, const QString& html, const QString& plainText,
+        QString* error = nullptr);
     bool updateTodoDone(qint64 id, bool done, QString *error = nullptr);
     bool deleteCompletedTodos(QString *error = nullptr);
+    bool deleteTodo(qint64 id, QString* error = nullptr);
 
     // Compatibility wrappers for the 0.1.0 quick-note API.
     QString quickNote(QString *error = nullptr) const;

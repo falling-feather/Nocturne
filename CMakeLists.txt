@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(Nocturne VERSION 0.1.6 LANGUAGES CXX)
+project(Nocturne VERSION 0.2.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -24,6 +24,10 @@ qt_add_executable(Nocturne WIN32
     src/GlobalHotkey.cpp
     src/MainWindow.h
     src/MainWindow.cpp
+    src/DocumentImporter.h
+    src/DocumentImporter.cpp
+    src/NotebookTree.h
+    src/NotebookTree.cpp
     src/NoteEditor.h
     src/NoteEditor.cpp
     src/NocturneDialogs.h
@@ -94,6 +98,7 @@ if(BUILD_TESTING)
 
     qt_add_executable(NocturneDesktopUiTest
         tests/DesktopUiSmoke.cpp
+        tests/DocumentWorkflow.cpp
         src/BackupManager.h
         src/BackupManager.cpp
         src/Branding.h
@@ -104,6 +109,10 @@ if(BUILD_TESTING)
         src/GlobalHotkey.cpp
         src/MainWindow.h
         src/MainWindow.cpp
+        src/DocumentImporter.h
+        src/DocumentImporter.cpp
+        src/NotebookTree.h
+        src/NotebookTree.cpp
         src/NoteEditor.h
         src/NoteEditor.cpp
         src/NocturneDialogs.h

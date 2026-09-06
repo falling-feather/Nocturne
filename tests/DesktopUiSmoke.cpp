@@ -3,6 +3,7 @@
 #include "MainWindow.h"
 #include "StickyNoteWindow.h"
 #include "NoteEditor.h"
+#include "NotebookTree.h"
 #include "NocturneStyle.h"
 #include "NocturneDialogs.h"
 
@@ -38,6 +39,8 @@
 #include <cmath>
 #include <iostream>
 #include <memory>
+
+bool runDocumentWorkflowTests(Database& database, MainWindow& window, const QString& outputDirectory);
 
 namespace {
 
@@ -140,7 +143,7 @@ int main(int argc, char* argv[])
         ok &= check(widget->grab().save(QDir(outputDirectory).filePath(name)), "redesign screenshot saves");
     };
     auto* editor = mainWindow->findChild<NoteEditor*>(QStringLiteral("noteEditor"));
-    auto* noteList = mainWindow->findChild<QListWidget*>(QStringLiteral("noteList"));
+    auto* noteList = mainWindow->findChild<NotebookTree*>(QStringLiteral("noteList"));
     auto* search = mainWindow->findChild<QLineEdit*>(QStringLiteral("searchEdit"));
     auto* focus = mainWindow->findChild<QToolButton*>(QStringLiteral("focusButton"));
     auto* todoToggle = mainWindow->findChild<QToolButton*>(QStringLiteral("todoToggleButton"));
@@ -240,7 +243,8 @@ int main(int argc, char* argv[])
     ok &= check(addedTodo, "todo input creates a real row");
     if (addedTodo) {
         todoList->scrollToItem(addedTodo);
-        const QPoint point = todoList->visualItemRect(addedTodo).center();
+        const QRect rowRect = todoList->visualItemRect(addedTodo);
+        const QPoint point(rowRect.left() + 12, rowRect.center().y());
         QMouseEvent press(QEvent::MouseButtonPress, point, todoList->viewport()->mapToGlobal(point),
                           Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
         QApplication::sendEvent(todoList->viewport(), &press);
@@ -630,6 +634,7 @@ int main(int argc, char* argv[])
         delete restoredSecond;
     }
 
+    ok &= runDocumentWorkflowTests(*database, *mainWindow, outputDirectory);
     mainWindow.reset();
 
 #ifdef Q_OS_WIN

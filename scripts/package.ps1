@@ -26,9 +26,10 @@ $packageName = if ($DirectoryName) {
 } else {
     "Nocturne-$appVersion-debug"
 }
-$packageDir = Join-Path $distRoot $packageName
+$artifactRoot = Join-Path $distRoot 'artifacts'
+$packageDir = Join-Path $artifactRoot $packageName
 
-$resolvedDist = [System.IO.Path]::GetFullPath($distRoot).TrimEnd('\') + '\'
+$resolvedDist = [System.IO.Path]::GetFullPath($artifactRoot).TrimEnd('\') + '\'
 $resolvedPackage = [System.IO.Path]::GetFullPath($packageDir)
 if (-not $resolvedPackage.StartsWith($resolvedDist, [System.StringComparison]::OrdinalIgnoreCase)) {
     throw "拒绝清理非 dist 目录：$resolvedPackage"

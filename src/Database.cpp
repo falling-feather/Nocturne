@@ -12,12 +12,13 @@
 #include <QStringList>
 #include <QVariant>
 #include <QVector>
+#include <QCoreApplication>
 
 #include <algorithm>
 
 namespace {
 
-constexpr int kSchemaVersion = 4;
+constexpr int kSchemaVersion = 5;
 constexpr int kExcerptLength = 180;
 
 void clearError(QString *error)
@@ -87,6 +88,25 @@ QString normalizedKind(const QString &kind)
 {
     return kind == QStringLiteral("sticky") ? QStringLiteral("sticky")
                                              : QStringLiteral("note");
+}
+
+bool syncTodoLinks(QSqlDatabase& database, qint64 noteId, const QString& html, QString* error)
+{
+    QSqlQuery links(database);
+    links.prepare(QStringLiteral("SELECT todo_id, anchor FROM todo_links WHERE note_id = ?"));
+    links.addBindValue(noteId);
+    if (!links.exec()) { setError(error, links.lastError().text()); return false; }
+    QList<QPair<qint64, bool>> states;
+    while (links.next()) states.append({links.value(0).toLongLong(),
+        html.contains(QStringLiteral("nocturne-todo:") + links.value(1).toString())});
+    links.finish();
+    QSqlQuery update(database);
+    update.prepare(QStringLiteral("UPDATE todo_links SET active = ? WHERE todo_id = ?"));
+    for (const auto& state : states) {
+        update.bindValue(0, state.second ? 1 : 0); update.bindValue(1, state.first);
+        if (!update.exec()) { setError(error, update.lastError().text()); return false; }
+    }
+    return true;
 }
 
 QString stickyTitle(const QString &text)
@@ -262,8 +282,9 @@ TodoRecord todoFromQuery(const QSqlQuery &query)
 Database::Database()
     : connectionName_(QStringLiteral("notebook-%1")
                           .arg(reinterpret_cast<quintptr>(this), 0, 16)),
-      dataDirectory_(QStandardPaths::writableLocation(
-          QStandardPaths::AppLocalDataLocation))
+      dataDirectory_(qApp && !qApp->property("nocturneDataDirectory").toString().isEmpty()
+          ? qApp->property("nocturneDataDirectory").toString()
+          : QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation))
 {
 }
 
@@ -396,6 +417,14 @@ bool Database::open(QString *error)
                 database.rollback();
                 return false;
             }
+        }
+
+        for (const QString& statement : {
+            QStringLiteral("CREATE TABLE IF NOT EXISTS todo_links (todo_id INTEGER PRIMARY KEY REFERENCES todos(id) ON DELETE CASCADE, note_id INTEGER NOT NULL REFERENCES notes(id) ON DELETE CASCADE, anchor TEXT NOT NULL UNIQUE, active INTEGER NOT NULL DEFAULT 1)"),
+            QStringLiteral("CREATE INDEX IF NOT EXISTS idx_todo_links_note ON todo_links(note_id)"),
+            QStringLiteral("CREATE TABLE IF NOT EXISTS import_folders (source_path TEXT COLLATE NOCASE PRIMARY KEY, folder_id INTEGER NOT NULL REFERENCES folders(id) ON DELETE CASCADE)"),
+            QStringLiteral("CREATE TABLE IF NOT EXISTS import_sources (source_path TEXT COLLATE NOCASE NOT NULL, source_hash BLOB NOT NULL, note_id INTEGER NOT NULL UNIQUE REFERENCES notes(id) ON DELETE CASCADE, PRIMARY KEY(source_path, source_hash))")}) {
+            if (!executeSchemaStatement(database, statement, error)) { database.rollback(); return false; }
         }
 
         const struct {
@@ -649,7 +678,7 @@ QList<NoteSummary> Database::listNoteSummaries(const QString &filter,
     if (folderFilter == UnfiledFolder)
         sql += QStringLiteral("AND n.folder_id IS NULL ");
     else if (folderFilter > 0)
-        sql += QStringLiteral("AND n.folder_id = :folder_id ");
+        sql += QStringLiteral("AND n.folder_id IN (WITH RECURSIVE tree(id) AS (SELECT :folder_id UNION SELECT f.id FROM folders f JOIN tree t ON f.parent_id=t.id) SELECT id FROM tree) ");
 
     const QString trimmedFilter = filter.trimmed();
     if (!trimmedFilter.isEmpty()) {
@@ -795,6 +824,7 @@ bool Database::updateNote(qint64 id,
         database.rollback();
         return false;
     }
+    if (!syncTodoLinks(database, id, safeHtml, error)) { database.rollback(); return false; }
     return commitTransaction(database, error);
 }
 
@@ -1316,14 +1346,21 @@ QList<TodoRecord> Database::listTodos(QString *error) const
 
     QSqlQuery query(database);
     query.prepare(QStringLiteral(
-        "SELECT id, text, done, due_at, sort_order FROM todos "
-        "ORDER BY done ASC, sort_order ASC, id ASC"));
+        "SELECT t.id, t.text, t.done, t.due_at, t.sort_order, l.note_id, l.anchor, n.title FROM todos t "
+        "LEFT JOIN todo_links l ON l.todo_id=t.id LEFT JOIN notes n ON n.id=l.note_id "
+        "WHERE l.todo_id IS NULL OR (l.active=1 AND n.deleted_at IS NULL) "
+        "ORDER BY t.done ASC, t.sort_order ASC, t.id ASC"));
     if (!query.exec()) {
         setError(error, queryError(QStringLiteral("读取待办失败"), query));
         return {};
     }
-    while (query.next())
-        records.append(todoFromQuery(query));
+    while (query.next()) {
+        TodoRecord todo = todoFromQuery(query);
+        todo.noteId = query.value(5).toLongLong();
+        todo.anchor = query.value(6).toString();
+        todo.noteTitle = query.value(7).toString();
+        records.append(todo);
+    }
     return records;
 }
 
@@ -1410,6 +1447,22 @@ bool Database::deleteCompletedTodos(QString *error)
     return commitTransaction(database, error);
 }
 
+bool Database::deleteTodo(qint64 id, QString* error)
+{
+    clearError(error);
+    QSqlDatabase database = openedDatabase(connectionName_, error);
+    if (!database.isValid() || !beginTransaction(database, error)) return false;
+    QSqlQuery query(database);
+    query.prepare(QStringLiteral("DELETE FROM todos WHERE id=?"));
+    query.addBindValue(id);
+    if (!query.exec() || query.numRowsAffected() != 1) {
+        setError(error, query.lastError().isValid() ? queryError(QStringLiteral("删除待办失败"), query)
+                                                 : QStringLiteral("这条待办已不存在。"));
+        database.rollback(); return false;
+    }
+    return commitTransaction(database, error);
+}
+
 QString Database::quickNote(QString *error) const
 {
     const std::optional<NoteRecord> record = stickyNote(error);
@@ -1419,4 +1472,134 @@ QString Database::quickNote(QString *error) const
 bool Database::saveQuickNote(const QString &text, QString *error)
 {
     return saveStickyNote(text, error) >= 0;
+}
+
+bool Database::moveFolder(qint64 id, qint64 parentId, QString* error)
+{
+    clearError(error);
+    QSqlDatabase db = openedDatabase(connectionName_, error);
+    if (!db.isValid() || !beginTransaction(db, error)) return false;
+    QSqlQuery cycle(db);
+    cycle.prepare(QStringLiteral("WITH RECURSIVE tree(id) AS (SELECT ? UNION SELECT f.id FROM folders f JOIN tree ON f.parent_id=tree.id) SELECT id FROM tree WHERE id=?"));
+    cycle.addBindValue(id); cycle.addBindValue(parentId);
+    if (!cycle.exec() || cycle.next()) {
+        setError(error, QStringLiteral("不能把目录移入自身或其子目录。")); db.rollback(); return false;
+    }
+    cycle.finish();
+    QSqlQuery query(db);
+    query.prepare(QStringLiteral("UPDATE folders SET parent_id=?, updated_at=? WHERE id=?"));
+    query.addBindValue(nullableId(parentId));
+    query.addBindValue(toStorageDateTime(QDateTime::currentDateTimeUtc())); query.addBindValue(id);
+    if (!query.exec() || query.numRowsAffected() != 1) {
+        setError(error, QStringLiteral("移动失败：目标不存在或存在同名目录。")); db.rollback(); return false;
+    }
+    return commitTransaction(db, error);
+}
+
+qint64 Database::importNote(const QString& sourcePath, const QByteArray& sourceHash,
+    const QString& title, const QString& html, const QString& plainText,
+    qint64 folderId, bool* skipped, QString* error)
+{
+    clearError(error);
+    if (skipped) *skipped = false;
+    QSqlDatabase db = openedDatabase(connectionName_, error);
+    if (!db.isValid() || !beginTransaction(db, error)) return 0;
+    QSqlQuery existing(db);
+    existing.prepare(QStringLiteral("SELECT n.id, n.deleted_at FROM import_sources s JOIN notes n ON n.id=s.note_id WHERE s.source_path=? AND s.source_hash=?"));
+    existing.addBindValue(sourcePath); existing.addBindValue(sourceHash);
+    if (!existing.exec()) { setError(error, existing.lastError().text()); db.rollback(); return 0; }
+    if (existing.next() && existing.value(1).isNull()) {
+        const qint64 id = existing.value(0).toLongLong(); existing.finish(); db.rollback();
+        if (skipped) *skipped = true;
+        return id;
+    }
+    existing.finish();
+    const QString now = toStorageDateTime(QDateTime::currentDateTimeUtc());
+    QSqlQuery insert(db);
+    insert.prepare(QStringLiteral("INSERT INTO notes(folder_id,kind,title,html,plain_text,excerpt,body_revision,content_hash,created_at,updated_at) VALUES(?,'note',?,?,?,?,1,?,?,?)"));
+    insert.addBindValue(nullableId(folderId)); insert.addBindValue(nonNullText(title));
+    insert.addBindValue(nonNullText(html)); insert.addBindValue(nonNullText(plainText));
+    insert.addBindValue(noteExcerpt(plainText)); insert.addBindValue(contentHash(html));
+    insert.addBindValue(now); insert.addBindValue(now);
+    if (!insert.exec()) { setError(error, insert.lastError().text()); db.rollback(); return 0; }
+    const qint64 id = insert.lastInsertId().toLongLong();
+    QSqlQuery source(db);
+    source.prepare(QStringLiteral("INSERT OR REPLACE INTO import_sources(source_path,source_hash,note_id) VALUES(?,?,?)"));
+    source.addBindValue(sourcePath); source.addBindValue(sourceHash); source.addBindValue(id);
+    if (!source.exec()) { setError(error, source.lastError().text()); db.rollback(); return 0; }
+    return commitTransaction(db, error) ? id : 0;
+}
+
+QString Database::noteSourcePath(qint64 noteId) const
+{
+    QSqlQuery query(QSqlDatabase::database(connectionName_));
+    query.prepare(QStringLiteral("SELECT source_path FROM import_sources WHERE note_id=?"));
+    query.addBindValue(noteId);
+    return query.exec() && query.next() ? query.value(0).toString() : QString();
+}
+
+qint64 Database::createLinkedTodo(qint64 noteId, int expectedRevision, const QString& text,
+    const QString& anchor, const QString& html, const QString& plainText, QString* error)
+{
+    clearError(error);
+    if (text.trimmed().isEmpty() || anchor.isEmpty()) { setError(error, QStringLiteral("请选择需要设置为待办的文字。")); return 0; }
+    QSqlDatabase db = openedDatabase(connectionName_, error);
+    if (!db.isValid() || !beginTransaction(db, error)) return 0;
+    QSqlQuery noteUpdate(db);
+    noteUpdate.prepare(QStringLiteral("UPDATE notes SET html=?, plain_text=?, excerpt=?, content_hash=?, body_revision=body_revision+1, updated_at=? WHERE id=? AND body_revision=? AND kind='note' AND deleted_at IS NULL"));
+    noteUpdate.addBindValue(html); noteUpdate.addBindValue(plainText); noteUpdate.addBindValue(noteExcerpt(plainText));
+    noteUpdate.addBindValue(contentHash(html)); noteUpdate.addBindValue(toStorageDateTime(QDateTime::currentDateTimeUtc()));
+    noteUpdate.addBindValue(noteId); noteUpdate.addBindValue(expectedRevision);
+    if (!noteUpdate.exec() || noteUpdate.numRowsAffected() != 1) {
+        setError(error, QStringLiteral("笔记已变化或不可编辑，请重新打开后再试。")); db.rollback(); return 0;
+    }
+    QSqlQuery todo(db);
+    todo.prepare(QStringLiteral("INSERT INTO todos(text,done,sort_order) SELECT ?,0,COALESCE(MAX(sort_order),-1)+1 FROM todos"));
+    todo.addBindValue(text);
+    if (!todo.exec()) { setError(error, todo.lastError().text()); db.rollback(); return 0; }
+    const qint64 id = todo.lastInsertId().toLongLong();
+    QSqlQuery link(db);
+    link.prepare(QStringLiteral("INSERT INTO todo_links(todo_id,note_id,anchor) VALUES(?,?,?)"));
+    link.addBindValue(id); link.addBindValue(noteId); link.addBindValue(anchor);
+    if (!link.exec() || !syncTodoLinks(db, noteId, html, error)) {
+        if (error && error->isEmpty()) *error = link.lastError().text();
+        db.rollback(); return 0;
+    }
+    return commitTransaction(db, error) ? id : 0;
+}
+
+qint64 Database::ensureImportedFolder(const QString& sourcePath, const QString& name,
+    qint64 parentId, QString* error)
+{
+    clearError(error);
+    QSqlDatabase db = openedDatabase(connectionName_, error);
+    if (!db.isValid() || !beginTransaction(db, error)) return 0;
+    QSqlQuery known(db);
+    known.prepare(QStringLiteral("SELECT folder_id FROM import_folders WHERE source_path=?"));
+    known.addBindValue(sourcePath);
+    if (!known.exec()) { setError(error, known.lastError().text()); db.rollback(); return 0; }
+    if (known.next()) {
+        const qint64 id = known.value(0).toLongLong(); known.finish(); db.rollback(); return id;
+    }
+    known.finish();
+    QSqlQuery existing(db);
+    existing.prepare(QStringLiteral("SELECT id FROM folders WHERE COALESCE(parent_id,0)=? AND name=? COLLATE NOCASE"));
+    existing.addBindValue(qMax<qint64>(0, parentId)); existing.addBindValue(name.simplified());
+    if (!existing.exec()) { setError(error, existing.lastError().text()); db.rollback(); return 0; }
+    qint64 id = existing.next() ? existing.value(0).toLongLong() : 0;
+    existing.finish();
+    if (!id) {
+        const QString now = toStorageDateTime(QDateTime::currentDateTimeUtc());
+        QSqlQuery folder(db);
+        folder.prepare(QStringLiteral("INSERT INTO folders(parent_id,name,sort_order,created_at,updated_at) SELECT ?,?,COALESCE(MAX(sort_order),-1)+1,?,? FROM folders WHERE COALESCE(parent_id,0)=?"));
+        folder.addBindValue(nullableId(parentId)); folder.addBindValue(name.simplified());
+        folder.addBindValue(now); folder.addBindValue(now); folder.addBindValue(qMax<qint64>(0, parentId));
+        if (!folder.exec()) { setError(error, folder.lastError().text()); db.rollback(); return 0; }
+        id = folder.lastInsertId().toLongLong();
+    }
+    QSqlQuery link(db);
+    link.prepare(QStringLiteral("INSERT INTO import_folders(source_path,folder_id) VALUES(?,?)"));
+    link.addBindValue(sourcePath); link.addBindValue(id);
+    if (!link.exec()) { setError(error, link.lastError().text()); db.rollback(); return 0; }
+    return commitTransaction(db, error) ? id : 0;
 }

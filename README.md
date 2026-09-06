@@ -1,110 +1,87 @@
 # 夜航 / Nocturne
 
-**所见所思，杂而成章。** 一款原生 C++ / Qt 桌面笔记软件，用笔记、便签和待办收好零碎灵感。
+**所见所思，杂而成章。** 原生 C++ / Qt 桌面笔记软件，用笔记、便签与待办整理工作内容。
 
-[下载 Windows x64 即用包](https://github.com/falling-feather/Nocturne/releases/download/v0.1.6/Nocturne-0.1.6-windows-x64.zip) · [版本与下载](https://github.com/falling-feather/Nocturne/releases) · [问题反馈](https://github.com/falling-feather/Nocturne/issues)
+[下载 Windows x64 即用包](https://github.com/falling-feather/Nocturne/releases/download/v0.2.0/Nocturne-0.2.0-windows-x64.zip) · [全部 Releases](https://github.com/falling-feather/Nocturne/releases) · [问题反馈](https://github.com/falling-feather/Nocturne/issues)
 
-## 下载后直接使用
+## 下载与启动
 
-1. 下载 **Nocturne-0.1.6-windows-x64.zip**，完整解压到固定目录。
-2. 双击 **Nocturne.exe**；运行库已包含，无需安装 Qt、Python 或开发工具。
-3. 左下角切换 **夜航 / 雾港 / 月白**，按 **F11** 进入专注，按 **Ctrl+Alt+N** 随时新建桌面便签。
+下载 **Nocturne-0.2.0-windows-x64.zip**，完整解压到固定目录，双击 `Nocturne.exe`。无需安装 Qt、Python 或开发工具；请保留随包 DLL 和插件目录。
 
-关闭主窗口后软件继续驻留托盘；从托盘菜单选择“退出”才会完全结束。软件目录可移动，笔记仍保存在当前 Windows 用户的本地应用数据目录；便携包不等于把笔记随软件一起携带。
+这是解压即用包，不是安装向导。关闭主窗口会驻留托盘，“文件 → 退出夜航”才会完全退出。当前仍为预发布版，尚未进行代码签名。
 
-![夜航主题实际界面](doc/image/Nocturne-redesign-night.png)
+![夜航主题](doc/image/Nocturne-redesign-night.png)
 
-另有[雾港](doc/image/Nocturne-redesign-harbor.png)、[月白](doc/image/Nocturne-redesign-moonlight.png)、[专注模式](doc/image/Nocturne-redesign-focus.png)和[原创取色窗口](doc/image/Nocturne-redesign-color.png)。所有截图使用隔离示例数据。
+另有[雾港](doc/image/Nocturne-redesign-harbor.png)、[月白](doc/image/Nocturne-redesign-moonlight.png)和[专注模式](doc/image/Nocturne-redesign-focus.png)。截图使用隔离示例资料。
 
-当前公开包为 **0.1.6 桌面原型**，包含三套主题与原创弹窗。校验值随 Release 的 `SHA256SUMS.txt` 提供；文件尚未进行代码签名。第三方许可与精确版本源码链接随包提供，见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+## v0.2.0 功能
 
-夜航（Nocturne）是一款面向 Windows 的本地轻量笔记原型，品牌标语是“所见所思，杂而成章。”它使用 C++17、Qt 6 Widgets 与 SQLite，目标是在大型游戏或其他高负载应用运行时也能常驻，并可随时用可配置全局快捷键（默认 `Ctrl+Alt+N`）呼出快速便签。
-
-> 当前桌面原型版本为 `0.1.6`，已完成多便签、按需正文、扁平化界面、一致性本地备份、“收舟入册”，以及带真实占用检测和旧绑定回退的可配置全局快捷键。它仍不是可托管重要资料的正式版本。首次测试前请先阅读[数据与备份](#数据与备份)和[原型方案与边界](docs/prototype-plan.md)。
-
-项目当前实现、任务与提交历史分别以 [`doc/01-开发者文档.md`](doc/01-开发者文档.md)、[`doc/02-项目规划.md`](doc/02-项目规划.md) 和 [`doc/03-开发历史.md`](doc/03-开发历史.md) 为权威入口；竞品矩阵与差异化方向见 [`doc/04-竞品调研与差异化方向.md`](doc/04-竞品调研与差异化方向.md)。本文继续作为构建、测试和备份的兼容入口。
-
-## 当前原型
-
-| 能力 | 当前范围 |
+| 能力 | 使用方式 |
 | --- | --- |
-| 品牌与界面 | 夜航 / 雾港 / 月白三套可持久切换主题；工具轨、摘要目录、宽阔正文、可收起待办；原创确认、输入、取色、快捷键与合册弹窗；原生 Qt 控件，无浏览器内核 |
-| 一体化窗口 | 原创品牌顶栏，保留拖动、双击最大化、贴边吸附和八向缩放；F11 / Esc 进入与退出专注，窄窗口自动为正文腾出空间 |
-| 主笔记 | 新建、重命名、搜索、编辑与软删除；列表只读取摘要，选中时才读取正文，并以正文版本校验缓存 |
-| 分组 | 创建、重命名、删除、筛选与移动；删除分组只把笔记移回“未分组” |
-| 富文本 | 粗体、斜体、下划线、标题、列表、字号和文字颜色 |
-| 图片 | 从剪贴板粘贴、拖入本地图片或通过选择文件插入 |
-| 文档交换 | HTML、Markdown、TXT 导入与导出；格式往返并不保证完全无损 |
-| 桌面便签 | 默认 `Ctrl+Alt+N` 全局或 `Ctrl+Shift+N` 窗口内每次新开一枚；可多枚并存并分别置顶/取消置顶；每枚独立记忆 `55%—100%` 不透明度、位置、尺寸和打开状态；内容作为正式笔记写入主列表，也可从主列表右键重新打开 |
-| 唤笺快捷键 | “管理 → 唤笺快捷键”录入单段组合；无修饰键、不支持主键或系统占用会直接解释并保持旧设置，成功后同步主按钮、托盘和帮助文案，重启继续生效 |
-| 收舟入册 | `Ctrl+Shift+B` 打开整理对话框；勾选多枚便签、拖动调整顺序并指定标题/分组，生成一篇可继续编辑和搜索的普通笔记；源便签默认保留，来源关系独立持久化 |
-| 待办 | 新增、切换完成状态、清理已完成项目 |
-| 后台驻留 | 关闭主窗口后驻留系统托盘；需要从托盘执行“退出”才会完全结束进程 |
-| 本地存储 | SQLite schema v4、WAL 与本地 `attachments`；`note_sources` 保存合册来源 ID、顺序和当时更新时间；升级时保留旧记录/设置；无账号、无云同步 |
-| 本地备份 | 文件菜单可立即备份或打开备份目录；启动后延迟执行每日一次后台备份；每份包含一致性 SQLite 快照、附件副本和 JSON 清单，自动/手动分别保留 7/10 份 |
+| 多级目录 | 创建、移动、重命名分组，以目录树组织笔记 |
+| 文档导入 | 导入 MD、TXT、HTML 或整个文件夹，保留层级及来源识别，适配常见文本编码 |
+| Markdown | H1—H6、列表、引用、代码块和常见行内格式，支持 Markdown 插入与导出 |
+| 文段待办 | 选中文字右键“设置待办”；点击标记查看明细，支持单项删除 |
+| 图片 | 等比适应正文；单击编辑可选图注，双击打开大图并缩放 |
+| 表格 | 手动指定行列、粘贴 Markdown 表格；单元格右键可增删行列 |
+| 选区转表格 | 右键或“插入”菜单；识别制表符、Markdown 管道和连续空格，已有无边框表格可就地整理；Ctrl+Z 撤销 |
+| 原创界面 | 夜航、雾港、月白三主题，专注模式、原创弹窗、中文编辑菜单，无浏览器内核 |
+| 统一资料位置 | 日常库移出可能受打包宿主重定向的 AppData；文件菜单可打开实际资料目录 |
 
-程序采用单实例运行。如果夜航已经在后台运行，再次启动不会创建第二个数据库连接；请使用快捷键或托盘图标唤回。
+同时保留自动保存、搜索、回收站、多枚置顶便签、可配置全局快捷键、“收舟入册”与每日备份。
 
-## 构建与运行
+## 资料与升级
 
-已知开发环境为 Windows、`D:/msys64/ucrt64` 工具链、Qt `6.10.1`。项目本身要求 Qt `6.5` 或更新版本，并使用 CMake 与 Ninja。仓库路径包含中文时，MSYS2 的 `moc` 与 `windres` 在部分区域设置下无法可靠读取源码路径，因此脚本和 CMake 会把**临时中间文件及 Windows 图标资源**放到纯英文的 `%LOCALAPPDATA%\NocturnePrototypeBuild`：
+v0.2.0 日常库位于：
+
+```text
+%USERPROFILE%/NocturneData/
+├── notebook.sqlite3
+├── attachments/
+└── backups/
+```
+
+可通过“文件 → 打开当前资料目录”确认。软件与资料目录分开；移动软件不会移动笔记。
+
+首次升级且新目录没有数据库时，程序从旧 `FeatherNote/FeatherNote` AppData 目录创建一致性快照、复制附件并调整图片引用。旧资料保留；新目录已经存在时不会用旧库覆盖。若历史上由打包宿主启动，旧 AppData 可能实际指向宿主缓存；多份旧库须分别备份核对，不应只比较路径文字或数量。个人资料不会打进发布包。
+
+更新前先正常退出旧夜航、保留备份，再替换程序文件。本项目开发验收固定使用 `dist/Nocturne-desktop/Nocturne.exe`，所有更新替换同一日常入口。
+
+## 备份与恢复
+
+“文件 → 立即备份本地资料”创建 SQLite 一致性快照、附件与 `backup.json` 清单，并检查 `quick_check`。自动备份保留最近 7 份，手动备份保留最近 10 份。
+
+恢复前完全退出程序，另存当前资料，再恢复所需数据库及附件。不要只复制运行中的主库：最新内容可能仍在 WAL 中。备份为本地明文资料，不属于云同步。
+
+## 快捷操作
+
+| 操作 | 快捷键 |
+| --- | --- |
+| 新建笔记 | Ctrl+N |
+| 搜索 | Ctrl+K |
+| 专注 | F11 / Esc |
+| 全局新建便签 | Ctrl+Alt+N，可在设置中修改 |
+| 收舟入册 | Ctrl+Shift+B |
+| 导入文件 | Ctrl+O |
+| 导出笔记 | Ctrl+Shift+S |
+
+## 构建与测试
+
+C++17、Qt 6 Widgets / SQL、CMake 3.21+、Ninja。Qt 最低 6.5；已验证环境为 Windows UCRT64、Qt 6.10.1。不要混用不同 ABI。
 
 ```powershell
 .\build.ps1 -Configuration Release
-& "$env:LOCALAPPDATA\NocturnePrototypeBuild\Release\Nocturne.exe"
-```
-
-构建脚本同时运行持久化迁移、600 篇数据库性能、真实 QWidget 桌面 UI 和本地备份四项测试。需要跳过时可加 `-SkipTests`。不要在同一构建目录中混用 MSVC、MinGW 或不同 ABI 的 Qt。
-
-## 打包可测试目录
-
-直接运行构建目录中的 `Nocturne.exe` 时，系统需要能从 `PATH` 找到 Qt 与 UCRT64 运行库。生成独立便携测试包：
-
-```powershell
 .\build.ps1 -Configuration Release -Package
-& .\dist\Nocturne-0.1.6-portable\Nocturne.exe
 ```
 
-MSYS2 版本的 `windeployqt` 没有完整复制 UCRT64 的非 Qt 依赖，因此仓库的打包脚本会递归扫描所选 EXE、Qt DLL 和插件，并只收集实际引用的 UCRT64 DLL。脚本不会把个人笔记打进发布目录。本轮生成的便携包已在不向 `PATH` 加入 Qt 的情况下独立启动，并完成 SQLite 重启恢复验证。
-便携目录中的版本号由打包脚本从 `CMakeLists.txt` 自动读取，修改项目版本时不应再手工维护打包目录名。
+中间产物位于 `%LOCALAPPDATA%/NocturnePrototypeBuild`，分发包位于 `dist/artifacts/`。脚本运行持久化迁移、数据库性能、真实 QWidget UI 与本地备份四项测试，覆盖文档、目录、待办、图片交互与表格。
 
-## 验证记录
+测试使用独立资料。应用测试/基准参数需显式进程环境 `NOCTURNE_ALLOW_TEST_PROFILE=1`，不要持久写入用户环境。
 
-2026-09-05，当前界面构建和 CTest **4/4** 通过；真实 Qt 回归覆盖主题切换、HTML/选区/撤销保持、分组与保存、待办、专注/窄窗口、原创弹窗、多便签、合册和热键冲突恢复。发布包另外从 ZIP 解压，并在 PATH 不包含 Qt 的条件下进行隔离启动验证。以下性能与内存数字属于此前版本的开发机历史样本，不能视为本次界面重构后的重新测量。
+包内含 `licenses/`、`THIRD_PARTY_NOTICES.md` 和精确版本源码链接；Release 提供 `SHA256SUMS.txt`。最终软件运行无需 Python。
 
-- Release 构建与链接通过；CTest `4/4` 包含持久化/迁移、600 篇数据库性能、真实桌面 UI 和本地备份回归。桌面测试除多便签与入册外，还用第二个原生窗口占用候选热键：冲突时旧设置不变，释放后同一组合可应用、同步主/托盘提示，并在重建主窗口后恢复。
-- 约 `21.5 MiB`、600 篇且混有大正文/图片引用的样本中，多轮摘要查询中位数约 `29—36 ms`、P95 约 `32—45 ms`；按 ID 读取所选正文中位数约 `0.09—0.13 ms`、P95 约 `0.18—0.20 ms`。
-- 四轮便携包启动中，去掉首轮后的主窗口可用时间中位数约 `1.09 s`；已驻留进程内新开便签的两轮样本落在 `117—184 ms`。隐藏到托盘并稳定后的 700 ms 采样窗 CPU 为 `0 ms`，符合事件驱动预期。
-- 删除装饰背景位图及其双份像素缓存后，可见主窗口稳定私有内存约 `112.3 MiB`、工作集约 `174.2 MiB`；隐藏到托盘后约 `114.5—115.0 MiB` 私有内存、`166.9—167.6 MiB` 工作集。隐藏时还会清空当前排版文档、图片资源和正文缓存，以限制内容增长；Qt 基础堆不会立刻归还系统，因此这轮不能宣称已经达到“极小内存”。若正式目标要求显著低于 `100 MiB`，需要做托盘控制器/主 UI 生命周期拆分，或纯 Win32/DirectWrite A/B 样机。
-- UI 回归使用隔离应用目录和真实 QWidget backing-store 截图，不触碰正常用户数据；实现截图见 [`doc/image/Nocturne-v013-implementation-main.png`](doc/image/Nocturne-v013-implementation-main.png) 与 [`doc/image/Nocturne-v013-implementation-sticky.png`](doc/image/Nocturne-v013-implementation-sticky.png)。
-- Release `Nocturne.exe` 的产品名、文件说明和版本资源为“夜航 · Nocturne”与 `0.1.6`；便携目录版本继续由 CMake 自动驱动，不另设手工版本号。
+## 当前边界
 
-## 数据与备份
+仅面向 Windows；尚无云同步、多人协作、加密或 DOCX 导入。Markdown 与 Qt 富文本并不完全等价，复杂 HTML/CSS、嵌套及合并表格往返可能存在差异。选区转表格识别规则结构，不推测任意文章的语义行列。
 
-应用使用 Qt 的 `QStandardPaths::AppLocalDataLocation`。为保证从 `V0.1.1` 原位升级后仍能读取既有笔记，后续版本继续沿用相同内部存储身份；组织名与应用名仍为 `FeatherNote`，因此 Windows 上的典型数据根目录仍为：
-
-```text
-%LOCALAPPDATA%\FeatherNote\FeatherNote\
-```
-
-其中数据库文件为 `notebook.sqlite3`，插入的图片保存在同一数据根目录下的 `attachments`。程序运行时还可能出现 SQLite 的 `notebook.sqlite3-wal` 和 `notebook.sqlite3-shm`；不要直接复制正在使用的主数据库文件来冒充一致性备份。
-
-`V0.1.4` 启动约五秒后在独立后台线程尝试每日备份，同一自然日已有成功备份时不会重复。也可以使用“文件 → 立即备份本地资料”；“文件 → 打开备份目录”会打开数据根下的 `backups`。每个 `NocturneBackup-*` 目录包含：
-
-- `notebook.sqlite3`：通过 SQLite `VACUUM INTO` 在线生成、并经 `PRAGMA quick_check` 复核的单文件快照；
-- `attachments/`：创建快照时的本地附件副本；
-- `backup.json`：应用版本、时间、schema、文件数和字节数清单。
-
-自动备份保留最近 7 份，手动备份保留最近 10 份；程序只清理由夜航命名、带有效清单且不是符号链接的同类目录。恢复仍必须先从托盘完全退出夜航：先另存当前数据，再把目标备份的 `notebook.sqlite3` 与 `attachments` 复制回数据根，启动后核对笔记、图片和待办。备份与原笔记同样未加密，不应上传到不可信位置。
-
-## 已知边界
-
-- 仅面向 Windows；全局快捷键依赖 Windows 系统能力。组合被占用时可以在管理菜单中更换，冲突不会覆盖上次有效配置。
-- Markdown、HTML 与富文本模型不完全等价，导入再导出可能丢失原型不支持的样式或结构。
-- 尚不支持 DOCX、云同步、多人协作、加密、提醒通知和在线一键恢复；当前只承诺 `0.1.0` 原型至 schema v4 的逐级原位迁移路径。
-- 图片已初步外置保存，但正式版的附件去重、移动、孤儿清理和一致性恢复规则仍在规划中。
-- 当前基线是开发机短时回归而非跨机器、长时间正式验收；目标、口径与“目标/实测”分栏见[原型方案](docs/prototype-plan.md#8-性能验收目标)。
-
-## 下一步
-
-本轮连续完成 `V0.1.4—V0.1.6`：一致性本地备份、“收舟入册”和可配置全局快捷键均已形成独立可追踪版本。下一轮可在正文反向拆签、灵感航迹、附件去重/孤儿恢复或备份一键恢复中继续择优；手机端和网络同步仍保持暂缓。详细任务状态见[项目规划](doc/02-项目规划.md)。
+原生 Qt 仍有基础内存成本；开发机短时性能样本不能代表所有机器。当前实现及验证见[开发者文档](doc/01-开发者文档.md)，计划见[项目规划](doc/02-项目规划.md)，提交记录见[开发历史](doc/03-开发历史.md)。

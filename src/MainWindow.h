@@ -9,6 +9,7 @@
 class GlobalHotkey;
 class NoteEditor;
 class StickyNoteWindow;
+class NotebookTree;
 
 class QAction;
 class QCloseEvent;
@@ -72,10 +73,20 @@ private:
     void deleteCurrentNote();
     void showNoteContextMenu(const QPoint& position);
     void importDocument();
+    void importFolder();
+    void runImport(const QStringList& paths, qint64 parentFolder = -1);
+    void setSelectionTodo();
+    void locateTodo(QListWidgetItem* item);
+    void navigateToTodo(qint64 noteId, const QString& anchor);
+    void showTodoDetails(qint64 todoId);
+    void showTodoContextMenu(const QPoint& position);
+    bool deleteSingleTodo(qint64 todoId);
+    void insertMarkdown();
+    void moveSelectedFolder();
     void exportDocument();
 
     void refreshFolders(qint64 preferredFilter = Database::AllFolders);
-    void createFolder();
+    void createFolder(qint64 parentId = 0);
     void renameSelectedFolder();
     void deleteSelectedFolder();
     void moveCurrentNoteToSelectedFolder();
@@ -163,7 +174,9 @@ private:
     bool m_todoRequested = true;
     bool m_narrowTodoOverride = false;
     QToolButton* m_maximizeButton = nullptr;
-    QListWidget* m_noteList = nullptr;
+    NotebookTree* m_noteList = nullptr;
+    qint64 m_treeFolderId = Database::AllFolders;
+    QToolButton* m_headingButton = nullptr;
     QLineEdit* m_searchEdit = nullptr;
     QComboBox* m_folderFilter = nullptr;
     QPushButton* m_folderManageButton = nullptr;

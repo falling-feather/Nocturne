@@ -1,4 +1,6 @@
 #include "Branding.h"
+#include "ProfileMigration.h"
+#include "BackupManager.h"
 #include "Database.h"
 #include "GlobalHotkey.h"
 #include "MainWindow.h"
@@ -13,6 +15,14 @@
 #include <QSettings>
 #include <QStandardPaths>
 #include <QTimer>
+#include <QDirIterator>
+#include <QFile>
+#include <QSqlDatabase>
+#include <QSqlQuery>
+#include <QSqlError>
+#include <QUrl>
+#include <QCryptographicHash>
+#include <QUuid>
 
 int main(int argc, char* argv[])
 {
@@ -23,6 +33,22 @@ int main(int argc, char* argv[])
         QStringLiteral("--benchmark-background"));
     const bool benchmarkProfile = startupBenchmark || backgroundBenchmark;
     const bool testProfile = app.arguments().contains(QStringLiteral("--test-profile"));
+    if ((testProfile || benchmarkProfile)
+        && qEnvironmentVariableIntValue("NOCTURNE_ALLOW_TEST_PROFILE") != 1) {
+        if (benchmarkProfile) {
+            qWarning("Benchmark profiles require NOCTURNE_ALLOW_TEST_PROFILE=1.");
+            return 2;
+        }
+        QApplication::setApplicationDisplayName(NocturneBrand::englishName());
+        QApplication::setStyle(QStringLiteral("Fusion"));
+        NocturneUi::applyPalette();
+        app.setStyleSheet(NocturneUi::styleSheet());
+        NocturneDialogs::information(nullptr, QStringLiteral("请使用桌面夜航"),
+            QStringLiteral("独立预览入口已停用。请从桌面“夜航 Nocturne”打开统一的笔记库。\n"
+                           "隔离配置仅供显式启用的自动化测试使用。"));
+        return 2;
+    }
+    app.setProperty("automationProfile", testProfile || benchmarkProfile);
     if (testProfile || benchmarkProfile)
         QStandardPaths::setTestModeEnabled(true);
     // 保留旧内部身份，确保 V0.1.1 用户的数据库与 QSettings 原位延续。
@@ -50,7 +76,9 @@ int main(int argc, char* argv[])
     NocturneUi::applyPalette();
     app.setStyleSheet(NocturneUi::styleSheet());
 
-    const QString lockDir = QStandardPaths::writableLocation(QStandardPaths::TempLocation);
+    const QString dailyDirectory = QDir::homePath() + QStringLiteral("/NocturneData");
+    const QString lockDir = benchmarkProfile || testProfile
+        ? QStandardPaths::writableLocation(QStandardPaths::TempLocation) : QDir::homePath();
     QDir().mkpath(lockDir);
     QLockFile instanceLock(QDir(lockDir).filePath(benchmarkProfile
         ? (backgroundBenchmark ? QStringLiteral("FeatherNoteBackgroundBenchmark.lock")
@@ -76,8 +104,14 @@ int main(int argc, char* argv[])
         return 0;
     }
 
-    Database database;
     QString error;
+    if (!testProfile && !benchmarkProfile) {
+        if (!prepareDailyData(QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation), dailyDirectory, &error)) {
+            NocturneDialogs::critical(nullptr, QStringLiteral("资料迁移未完成"), error); return 1;
+        }
+        app.setProperty("nocturneDataDirectory", dailyDirectory);
+    }
+    Database database;
     if (!database.open(&error)) {
         NocturneDialogs::critical(nullptr,
                               QStringLiteral("无法打开本地数据"),

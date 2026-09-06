@@ -31,6 +31,7 @@ QString getText(QWidget* parent, const QString& title, const QString& label,
     QLineEdit::EchoMode mode = QLineEdit::Normal, const QString& text = QString(), bool* ok = nullptr);
 QString getOpenFileName(QWidget* parent, const QString& title, const QString& directory,
     const QString& filter);
+QString getExistingDirectory(QWidget* parent, const QString& title);
 QStringList getOpenFileNames(QWidget* parent, const QString& title, const QString& directory,
     const QString& filter);
 QString getSaveFileName(QWidget* parent, const QString& title, const QString& directory,

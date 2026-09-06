@@ -1,4 +1,4 @@
-夜航 Nocturne 0.1.6 · Windows x64
+夜航 Nocturne 0.2.0 · Windows x64
 
 1. 把 ZIP 完整解压到一个固定目录。
 2. 双击 Nocturne.exe 启动。无需安装 Qt、Python 或开发工具。
@@ -16,8 +16,8 @@ Ctrl+Shift+B       收舟入册
 已经在后台运行时，请从托盘打开窗口。
 
 数据存储
-笔记保存在当前 Windows 用户的本地应用数据目录：
-%LOCALAPPDATA%\FeatherNote\FeatherNote\
+笔记保存在当前 Windows 用户的统一资料目录（可从文件菜单打开）：
+%USERPROFILE%\NocturneData\
 其中有 notebook.sqlite3、attachments 和 backups。
 软件目录可移动，用户笔记不会跟着软件目录移动。
 “文件 → 立即备份本地资料”可创建一致性备份。
@@ -25,6 +25,6 @@ Ctrl+Shift+B       收舟入册
 
 版本与反馈
 https://github.com/falling-feather/Nocturne
-https://github.com/falling-feather/Nocturne/releases/tag/v0.1.6
+https://github.com/falling-feather/Nocturne/releases/tag/v0.2.0
 当前为桌面原型版本，尚未进行代码签名。
 第三方许可证在 licenses/；精确版本源码入口见 THIRD_PARTY_SOURCES.md。

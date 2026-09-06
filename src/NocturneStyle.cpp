@@ -11,9 +11,31 @@
 #include <QPainterPath>
 #include <QPalette>
 #include <QStyleOptionViewItem>
+#include <QTranslator>
 #include <initializer_list>
 
 namespace {
+// Translate Qt's standard editing commands for every text/line editor,
+// including sticky notes and dialog fields, without changing their behavior.
+class EditingTranslator final : public QTranslator
+{
+public:
+    explicit EditingTranslator(QObject* parent) : QTranslator(parent) {}
+    bool isEmpty() const override { return false; }
+    QString translate(const char*, const char* source, const char*, int) const override
+    {
+        static const QHash<QString, QString> labels = {
+            {"undo", QStringLiteral("撤销")}, {"redo", QStringLiteral("重做")},
+            {"cut", QStringLiteral("剪切")}, {"copy", QStringLiteral("复制")},
+            {"paste", QStringLiteral("粘贴")}, {"delete", QStringLiteral("删除")},
+            {"select all", QStringLiteral("全选")},
+            {"copy link location", QStringLiteral("复制链接地址")},
+            {"copy link address", QStringLiteral("复制链接地址")}
+        };
+        return labels.value(QString::fromUtf8(source).remove('&').toLower());
+    }
+};
+
 QString firstInstalledFamily(std::initializer_list<QString> candidates)
 {
     const QStringList installed = QFontDatabase::families();
@@ -198,6 +220,9 @@ void refreshIcons(QWidget* root)
 
 void applyPalette()
 {
+    static auto* editingTranslator = new EditingTranslator(qApp);
+    static const bool installed = qApp->installTranslator(editingTranslator);
+    Q_UNUSED(installed)
     const auto& t = theme();
     QPalette p;
     p.setColor(QPalette::Window, t.panel);
@@ -313,6 +338,10 @@ QString styleSheet()
         QTreeView, QListView { background: @paper; color: @text; border: 1px solid @border;
             selection-background-color: @selected; selection-color: @text; }
         QListWidget#noteList, QListWidget#todoList { background: transparent; border: 0; }
+        QTreeWidget#noteList { background: transparent; border: 0; outline: none; }
+        QTreeWidget#noteList::item { border: 0; border-radius: 0; padding: 4px 2px; color: @text; }
+        QTreeWidget#noteList::item:selected { background: @selected; color: @text; }
+        QTreeWidget#noteList::item:hover { background: @hover; }
         QHeaderView::section { background: @panel; color: @muted; border: 0;
             border-bottom: 1px solid @border; padding: 6px; }
         QLabel#collectHeading, QLabel#hotkeyHeading { color: @heading; font-family: "@serif"; }
@@ -460,7 +489,7 @@ void NocturneTodoDelegate::paint(QPainter* p, const QStyleOptionViewItem& option
     p->setFont(f); p->setPen(done ? theme().muted : theme().text);
     const QRectF textRect = row.adjusted(32, 4, -5, -4);
     p->drawText(textRect, Qt::AlignLeft | Qt::AlignVCenter,
-                p->fontMetrics().elidedText(index.data().toString(), Qt::ElideRight, qMax(1, qRound(textRect.width()))));
+                p->fontMetrics().elidedText(index.data().toString().simplified(), Qt::ElideRight, qMax(1, qRound(textRect.width()))));
     if (option.state.testFlag(QStyle::State_HasFocus)) {
         p->setPen(QPen(theme().accent, 1, Qt::DotLine)); p->setBrush(Qt::NoBrush);
         p->drawRoundedRect(row, 4, 4);
@@ -477,7 +506,8 @@ bool NocturneTodoDelegate::editorEvent(QEvent* event, QAbstractItemModel* model,
     bool toggle = false;
     if (event->type() == QEvent::MouseButtonRelease) {
         auto* mouse = static_cast<QMouseEvent*>(event);
-        toggle = mouse->button() == Qt::LeftButton && option.rect.contains(mouse->position().toPoint());
+        toggle = mouse->button() == Qt::LeftButton && option.rect.contains(mouse->position().toPoint())
+            && mouse->position().x() <= option.rect.left() + 30;
     } else if (event->type() == QEvent::KeyPress) {
         const int key = static_cast<QKeyEvent*>(event)->key();
         toggle = key == Qt::Key_Space || key == Qt::Key_Select;

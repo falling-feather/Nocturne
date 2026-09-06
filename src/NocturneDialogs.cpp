@@ -162,6 +162,20 @@ bool NocturneDialog::nativeEvent(const QByteArray& type, void* message, qintptr*
 }
 
 namespace NocturneDialogs {
+QString getExistingDirectory(QWidget* parent, const QString& title)
+{
+    QFileDialog dialog(parent, title);
+    dialog.setObjectName(QStringLiteral("directoryImportDialog"));
+    dialog.setOption(QFileDialog::DontUseNativeDialog, true);
+    dialog.setOption(QFileDialog::ShowDirsOnly, true);
+    dialog.setFileMode(QFileDialog::Directory);
+    dialog.setLabelText(QFileDialog::Accept, QStringLiteral("导入此文件夹"));
+    dialog.setLabelText(QFileDialog::Reject, QStringLiteral("取消"));
+    decorate(&dialog);
+    dialog.resize(760, 520);
+    return dialog.exec() == QDialog::Accepted ? dialog.selectedFiles().value(0) : QString();
+}
+
 void decorate(QDialog* dialog)
 {
     auto* body = new QWidget(dialog);
