@@ -1,12 +1,12 @@
 # 夜航 / Nocturne
 
-**所见所思，杂而成章。** 原生 C++ / Qt 桌面笔记软件，用笔记、便签与待办整理工作内容。
+**所见所思，杂而成章。** 原生 C++ / Qt 桌面笔记软件，用笔记、便签与待办整理工作内容。本地保存、按需加载，可直接编辑已有项目文档。
 
-[下载 Windows x64 即用包](https://github.com/falling-feather/Nocturne/releases/download/v0.2.0/Nocturne-0.2.0-windows-x64.zip) · [全部 Releases](https://github.com/falling-feather/Nocturne/releases) · [问题反馈](https://github.com/falling-feather/Nocturne/issues)
+[下载 Windows x64 即用包](https://github.com/falling-feather/Nocturne/releases/download/v0.3.0/Nocturne-0.3.0-windows-x64.zip) · [v0.3.0 更新说明](https://github.com/falling-feather/Nocturne/releases/tag/v0.3.0) · [问题反馈](https://github.com/falling-feather/Nocturne/issues)
 
 ## 下载与启动
 
-下载 **Nocturne-0.2.0-windows-x64.zip**，完整解压到固定目录，双击 `Nocturne.exe`。无需安装 Qt、Python 或开发工具；请保留随包 DLL 和插件目录。
+下载 **Nocturne-0.3.0-windows-x64.zip**，完整解压到固定目录，双击 `Nocturne.exe`。无需安装 Qt、Python 或开发工具；请保留随包辅助程序、脚本、DLL 和插件目录。
 
 这是解压即用包，不是安装向导。关闭主窗口会驻留托盘，“文件 → 退出夜航”才会完全退出。当前仍为预发布版，尚未进行代码签名。
 
@@ -14,7 +14,7 @@
 
 另有[雾港](doc/image/Nocturne-redesign-harbor.png)、[月白](doc/image/Nocturne-redesign-moonlight.png)和[专注模式](doc/image/Nocturne-redesign-focus.png)。截图使用隔离示例资料。
 
-## v0.2.0 功能
+## 日常笔记
 
 | 能力 | 使用方式 |
 | --- | --- |
@@ -22,7 +22,7 @@
 | 文档导入 | 导入 MD、TXT、HTML 或整个文件夹，保留层级及来源识别，适配常见文本编码 |
 | Markdown | H1—H6、列表、引用、代码块和常见行内格式，支持 Markdown 插入与导出 |
 | 文段待办 | 选中文字右键“设置待办”；点击标记查看明细，支持单项删除 |
-| 图片 | 等比适应正文；单击编辑可选图注，双击打开大图并缩放 |
+| 图片与对齐 | 单击选中后拖动边框缩放，右键编辑可选图注；双击预览支持窗口缩放、滚轮放大和拖动。顶栏可设置文字及图片的左、中、右对齐 |
 | 表格 | 手动指定行列、粘贴 Markdown 表格；单元格右键可增删行列 |
 | 选区转表格 | 右键或“插入”菜单；识别制表符、Markdown 管道和连续空格，已有无边框表格可就地整理；Ctrl+Z 撤销 |
 | 原创界面 | 夜航、雾港、月白三主题，专注模式、原创弹窗、中文编辑菜单，无浏览器内核 |
@@ -30,28 +30,51 @@
 
 同时保留自动保存、搜索、回收站、多枚置顶便签、可配置全局快捷键、“收舟入册”与每日备份。
 
+## v0.3.0 新增
+
+围绕项目文档、可恢复编辑和内容交接补充以下能力：
+
+- **LaTeX 数学公式**：行内 `$...$`、独立 `$$...$$`，以及 `\(...\)` / `\[...\]`；通过 `∑`、插入菜单或右键编辑源码，Markdown 导出保留公式。支持常见分数、矩阵、上下标、根式及求和，运行时无需 TeX 或浏览器。
+- **本文大纲**：页头“大纲”或 `Ctrl+Shift+O`，按 H1—H6 展开并跳到对应段落。
+- **分层目录选择**：归组、筛选和目录移动从一级目录开始，点击箭头逐级展开；主导航初始收起。
+- **外部文档安全编辑**：源码／预览切换，保留编码与换行；写入前检查外部变化，冲突时保留双方内容，支持刷新和重新关联目录。
+- **恢复中心与航迹**：回收站、失败草稿、单篇备份恢复；压缩修改历史、检查点、时段比较和差异导出。
+- **阅读与快速记录**：查找替换、最近打开、置顶、阅读位置、前后跳转；选段便签可回到来源，支持模板和按项目筛选待办。
+- **AI 交接与 MCP**：选择笔记或当前选区，生成交接包及修改差异；MCP 只在授权范围内读取并提交修改建议，由用户比较后应用。
+- **离线语音**：主动录音或导入录音，本机中文转写，校对后插入。语音模型为可选组件，初次下载约 36 MiB，平时不加载。
+
+恢复中心位于“文件”菜单，航迹位于“编辑”菜单，模板与 AI 交接位于“管理”菜单，语音位于“插入”菜单。MCP 配置可直接复制为 Codex TOML，服务随客户端按需启动，撤销交接后停止访问。夜航本身不内置大模型，也不会自动把资料发送给 AI。
+
+![航迹与修改比较](doc/image/Nocturne-history.png)
+
+![离线语音转写](doc/image/Nocturne-voice.png)
+
+语音首版采用 sherpa-onnx 与中文 Zipformer-small-CTC INT8，模型及推理库单独下载并校验。支持录音或系统可解码的 WAV、MP3、M4A 等文件，经本机转写、人工校对后插入；尚不提供实时逐字显示、说话人识别或多语言模型切换。文件转写链路已自动验证，实体麦克风录音仍需在使用设备上验收。
+
 ## 资料与升级
 
-v0.2.0 日常库位于：
+日常库位于：
 
 ```text
 %USERPROFILE%/NocturneData/
 ├── notebook.sqlite3
 ├── attachments/
-└── backups/
+├── backups/
+├── ai-sessions/    # 用户主动开启的 MCP 共享范围
+└── voice/          # 可选语音组件与录音
 ```
 
 可通过“文件 → 打开当前资料目录”确认。软件与资料目录分开；移动软件不会移动笔记。
 
 首次升级且新目录没有数据库时，程序从旧 `FeatherNote/FeatherNote` AppData 目录创建一致性快照、复制附件并调整图片引用。旧资料保留；新目录已经存在时不会用旧库覆盖。若历史上由打包宿主启动，旧 AppData 可能实际指向宿主缓存；多份旧库须分别备份核对，不应只比较路径文字或数量。个人资料不会打进发布包。
 
-更新前先正常退出旧夜航、保留备份，再替换程序文件。本项目开发验收固定使用 `dist/Nocturne-desktop/Nocturne.exe`，所有更新替换同一日常入口。
+更新前先正常退出旧夜航、保留备份，再替换程序文件。v0.3.0 会将数据库原位升级到 schema v7，保留既有笔记与关联；旧版本程序不应打开升级后的资料库。本项目开发验收固定使用 `dist/Nocturne-desktop/Nocturne.exe`，所有更新替换同一日常入口。
 
 ## 备份与恢复
 
 “文件 → 立即备份本地资料”创建 SQLite 一致性快照、附件与 `backup.json` 清单，并检查 `quick_check`。自动备份保留最近 7 份，手动备份保留最近 10 份。
 
-恢复前完全退出程序，另存当前资料，再恢复所需数据库及附件。不要只复制运行中的主库：最新内容可能仍在 WAL 中。备份为本地明文资料，不属于云同步。
+优先使用“文件 → 恢复中心”预览并恢复单篇笔记，或在“编辑 → 航迹”中找回已记录的版本。需要整库恢复时，先完全退出程序并另存当前资料，再恢复数据库及附件。不要只复制运行中的主库：最新内容可能仍在 WAL 中。备份为本地明文资料，不属于云同步。
 
 ## 快捷操作
 
@@ -64,17 +87,23 @@ v0.2.0 日常库位于：
 | 收舟入册 | Ctrl+Shift+B |
 | 导入文件 | Ctrl+O |
 | 导出笔记 | Ctrl+Shift+S |
+| 本文查找 / 替换 | Ctrl+F / Ctrl+H |
+| 本文大纲 | Ctrl+Shift+O |
+| 上一篇 / 下一篇访问记录 | Alt+Left / Alt+Right |
+| 语音输入 | Ctrl+Shift+M |
 
 ## 构建与测试
 
 C++17、Qt 6 Widgets / SQL、CMake 3.21+、Ninja。Qt 最低 6.5；已验证环境为 Windows UCRT64、Qt 6.10.1。不要混用不同 ABI。
+
+首次配置需联网获取固定版本的 MicroTeX 与 TinyXML-2 源码；哈希、Qt 适配及内嵌数学字体由 `scripts/MathRuntime.cmake` 管理，后续构建可复用本地缓存。分发包包含相应原始许可。
 
 ```powershell
 .\build.ps1 -Configuration Release
 .\build.ps1 -Configuration Release -Package
 ```
 
-中间产物位于 `%LOCALAPPDATA%/NocturnePrototypeBuild`，分发包位于 `dist/artifacts/`。脚本运行持久化迁移、数据库性能、真实 QWidget UI 与本地备份四项测试，覆盖文档、目录、待办、图片交互与表格。
+中间产物位于 `%LOCALAPPDATA%/NocturnePrototypeBuild`，分发包位于 `dist/artifacts/`。脚本运行持久化迁移、数据库性能、真实 QWidget UI、本地备份和工作区五项测试，覆盖原有编辑流程，以及源文件冲突、历史恢复、选区交接、MCP 子进程与语音校对插入。真实语音文件链路的可选测试配置见[测试说明](doc/01-开发者文档.md#12-测试与验证)。
 
 测试使用独立资料。应用测试/基准参数需显式进程环境 `NOCTURNE_ALLOW_TEST_PROFILE=1`，不要持久写入用户环境。
 
@@ -82,6 +111,6 @@ C++17、Qt 6 Widgets / SQL、CMake 3.21+、Ninja。Qt 最低 6.5；已验证环�
 
 ## 当前边界
 
-仅面向 Windows；尚无云同步、多人协作、加密或 DOCX 导入。Markdown 与 Qt 富文本并不完全等价，复杂 HTML/CSS、嵌套及合并表格往返可能存在差异。选区转表格识别规则结构，不推测任意文章的语义行列。
+仅面向 Windows；尚无云同步、多人协作、加密或 DOCX 导入。外部文档以源码编辑保留原格式；内部富文本与 Markdown 并不完全等价，复杂 HTML/CSS、嵌套及合并表格往返可能存在差异。LaTeX 支持常见数学公式，不替代完整 TeX 排版。选区转表格识别规则结构，不推测任意文章的语义行列。
 
 原生 Qt 仍有基础内存成本；开发机短时性能样本不能代表所有机器。当前实现及验证见[开发者文档](doc/01-开发者文档.md)，计划见[项目规划](doc/02-项目规划.md)，提交记录见[开发历史](doc/03-开发历史.md)。

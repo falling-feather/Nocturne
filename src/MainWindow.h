@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Database.h"
+#include "SourceFile.h"
 
 #include <QCache>
 #include <QList>
@@ -10,6 +11,8 @@ class GlobalHotkey;
 class NoteEditor;
 class StickyNoteWindow;
 class NotebookTree;
+class FolderComboBox;
+class DocumentOutline;
 
 class QAction;
 class QCloseEvent;
@@ -33,6 +36,8 @@ class QSystemTrayIcon;
 class QThread;
 class QTimer;
 class QToolButton;
+class QPlainTextEdit;
+class FindBar;
 
 class MainWindow final : public QMainWindow
 {
@@ -60,6 +65,25 @@ private:
     void updateDocumentInfo();
     void connectSignals();
     void restoreWindowState();
+    void buildWorkspaceUi();
+    void loadSourceState(qint64 noteId, const NoteRecord& note);
+    void toggleSourceView();
+    void renderSourcePreview();
+    void compareSource();
+    void reloadSource();
+    void relinkSource();
+    void relinkSelectedDirectory();
+    void refreshLinkedFolders();
+    void showHistory();
+    void showRecovery();
+    void showTemplates();
+    void captureSelection();
+    void showAiHandoff();
+    void showVoiceInput();
+    void rememberReadingPosition();
+    void navigateHistory(int delta);
+    void openNoteById(qint64 id);
+    bool keepRecoveryDraft(const QString& html, const QString& plainText);
 
     void ensureFirstNote();
     void refreshNotes(qint64 preferredId = -1);
@@ -178,18 +202,42 @@ private:
     qint64 m_treeFolderId = Database::AllFolders;
     QToolButton* m_headingButton = nullptr;
     QLineEdit* m_searchEdit = nullptr;
-    QComboBox* m_folderFilter = nullptr;
+    FolderComboBox* m_folderFilter = nullptr;
     QPushButton* m_folderManageButton = nullptr;
     QPushButton* m_newNoteButton = nullptr;
     QPushButton* m_stickyButton = nullptr;
     QLabel* m_noteCountLabel = nullptr;
 
     QLineEdit* m_titleEdit = nullptr;
-    QComboBox* m_noteFolderCombo = nullptr;
+    FolderComboBox* m_noteFolderCombo = nullptr;
+    DocumentOutline* m_outline = nullptr;
+    QToolButton* m_outlineButton = nullptr;
+    bool m_outlineRequested = false;
     NoteEditor* m_editor = nullptr;
+    QStackedWidget* m_bodyStack = nullptr;
+    QPlainTextEdit* m_sourceEditor = nullptr;
+    QFrame* m_sourceBar = nullptr;
+    QLabel* m_sourceState = nullptr;
+    QToolButton* m_sourceToggle = nullptr;
+    FindBar* m_findBar = nullptr;
+    std::optional<LinkedSourceRecord> m_linkedSource;
+    std::optional<SourceSnapshot> m_sourceSnapshot;
+    QString m_sourceLoadError;
+    QThread* m_sourceRefresh = nullptr;
+    QString m_viewMode = QStringLiteral("all");
+    QComboBox* m_todoFolderFilter = nullptr;
+    QList<qint64> m_navigationHistory;
+    int m_navigationIndex = -1;
+    bool m_historyJump = false;
+    QToolButton* m_backButton = nullptr;
+    QToolButton* m_forwardButton = nullptr;
     QToolButton* m_boldButton = nullptr;
     QToolButton* m_italicButton = nullptr;
     QToolButton* m_underlineButton = nullptr;
+    QToolButton* m_alignLeftButton = nullptr;
+    QToolButton* m_alignCenterButton = nullptr;
+    QToolButton* m_alignRightButton = nullptr;
+    QToolButton* m_imageToolsButton = nullptr;
     QComboBox* m_fontSizeCombo = nullptr;
     QLabel* m_saveStateLabel = nullptr;
 

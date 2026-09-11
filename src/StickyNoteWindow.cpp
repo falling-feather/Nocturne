@@ -2,6 +2,7 @@
 
 #include "Branding.h"
 #include "Database.h"
+#include "WorkspaceStore.h"
 #include "WindowChrome.h"
 #include "NocturneStyle.h"
 
@@ -149,6 +150,10 @@ StickyNoteWindow::StickyNoteWindow(Database* db, qint64 noteId, QWidget* parent)
     auto* opacityAction = new QWidgetAction(settingsMenu_);
     opacityAction->setDefaultWidget(opacityPanel);
     settingsMenu_->addAction(opacityAction);
+    if(WorkspaceStore(*db_).captureSource(noteId_)){
+        settingsMenu_->addSeparator();auto* source=settingsMenu_->addAction(QStringLiteral("返回来源文段"));source->setObjectName("stickySourceAction");
+        connect(source,&QAction::triggered,this,[this]{emit sourceRequested(noteId_);});
+    }
     settingsButton->setMenu(settingsMenu_);
     settingsButton->setPopupMode(QToolButton::InstantPopup);
 

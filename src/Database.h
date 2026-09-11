@@ -50,6 +50,14 @@ struct NoteSourceRecord {
     int position = 0;
 };
 
+struct LinkedSourceRecord {
+    qint64 noteId = 0;
+    QString sourcePath;
+    QString sourceKind;
+    QByteArray sourceHash;
+    QDateTime linkedAt;
+};
+
 class Database {
 public:
     static constexpr qint64 AllFolders = -1;
@@ -78,7 +86,11 @@ public:
                     const QString &title,
                     const QString &html,
                     const QString &plainText,
-                    QString *error = nullptr);
+                    QString *error = nullptr,
+                    const QString& reason = QStringLiteral("编辑保存"),
+                    const QByteArray& expectedHash = {},
+                    const QByteArray* sourceBytes = nullptr,
+                    const QString& newSourcePath = {}, const QString& newSourceKind = {});
     bool renameNote(qint64 id,
                     const QString &title,
                     QString *error = nullptr);
@@ -105,9 +117,19 @@ public:
     qint64 importNote(const QString& sourcePath, const QByteArray& sourceHash,
         const QString& title, const QString& html, const QString& plainText,
         qint64 folderId, bool* skipped, QString* error = nullptr);
+    qint64 linkNote(const QString& sourcePath, const QByteArray& sourceHash,
+        const QString& sourceKind, const QString& title, const QString& html,
+        const QString& plainText, qint64 folderId, bool* skipped,
+        QString* error = nullptr, const QByteArray* sourceBytes = nullptr);
     QString noteSourcePath(qint64 noteId) const;
     qint64 ensureImportedFolder(const QString& sourcePath, const QString& name,
         qint64 parentId, QString* error = nullptr);
+    qint64 ensureLinkedFolder(const QString& sourcePath, const QString& name,
+        qint64 parentId, QString* error = nullptr);
+    std::optional<LinkedSourceRecord> linkedSource(qint64 noteId,
+        QString* error = nullptr) const;
+    bool updateLinkedSourceHash(qint64 noteId, const QByteArray& sourceHash,
+        QString* error = nullptr);
 
     std::optional<NoteRecord> stickyNote(QString *error = nullptr) const;
     qint64 saveStickyNote(const QString &text, QString *error = nullptr);
@@ -129,6 +151,7 @@ public:
     bool saveQuickNote(const QString &text, QString *error = nullptr);
 
 private:
+    friend class WorkspaceStore;
     QString connectionName_;
     QString dataDirectory_;
     bool ftsEnabled_ = false;

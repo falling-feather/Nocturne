@@ -5,6 +5,11 @@
 #include "NoteEditor.h"
 #include "NotebookTree.h"
 #include "NocturneStyle.h"
+#include "MathSupport.h"
+#include "DocumentOutline.h"
+#include "FolderComboBox.h"
+#include <QScrollBar>
+#include <QClipboard>
 #include <QAction>
 #include <QApplication>
 #include <QComboBox>
@@ -135,6 +140,97 @@ bool runDocumentWorkflowTests(Database& database, MainWindow& window, const QStr
 
     std::cerr << "WORKFLOW stage: Markdown\n";
     NoteEditor scratch;
+    scratch.insertMarkdownText(QStringLiteral("文字 $\\frac{a_i}{\\sqrt{b}}$ 结束\n\n$$\n\\begin{pmatrix}1 & 2 \\\\ 3 & 4\\end{pmatrix}\n$$"));
+    check(scratch.toHtml().contains(QStringLiteral("nocturne-math:")), "LaTeX becomes a rendered object with retained source");
+    check(scratch.markdownForExport().contains(QStringLiteral("$\\frac{a_i}{\\sqrt{b}}$"))
+        && scratch.markdownForExport().contains(QStringLiteral("\\begin{pmatrix}")), "math source survives Markdown export");
+    NoteEditor reopenedMath;
+    reopenedMath.setHtml(scratch.toHtml());
+    check(reopenedMath.markdownForExport().contains(QStringLiteral("\\frac{a_i}{\\sqrt{b}}")), "math survives HTML persistence");
+    scratch.clear();
+    for (const QString& math : {QStringLiteral("\\varphi_i=\\frac{\\pi\\theta_i}{180}"),
+            QStringLiteral("\\sum_{i=1}^{n}x_i^2"), QStringLiteral("\\sqrt{x^2+y^2}"),
+            QStringLiteral("\\begin{pmatrix}1 & 2 \\\\ 3 & 4\\end{pmatrix}"),
+            QStringLiteral("f(x)=\\begin{cases}x^2 & x>0 \\\\ 0 & x\\le0\\end{cases}"),
+            QStringLiteral("\\begin{aligned}x&=1\\\\y&=2\\end{aligned}")}) {
+        const auto result = MathSupport::render({math, true}, QColor("#c9d5e1"));
+        if (!result.error.isEmpty()) std::cerr << "MATH ERROR: " << result.error.toStdString() << '\n';
+        check(result.error.isEmpty() && !result.image.isNull(), "fractions, indices, sums, roots, matrices, cases and alignment render");
+    }
+    check(!MathSupport::render({QStringLiteral("\\unknownNocturneCommand{x}"), false}, Qt::white).error.isEmpty(), "unsupported LaTeX reports a recoverable error");
+    check(!MathSupport::render({QStringLiteral("\\newcommand{\\a}{\\a}\\a"), false}, Qt::white).error.isEmpty(), "recursive macro definitions are rejected");
+    const QString codeMath = QStringLiteral("`$x_i$`\n\n```tex\n$$\\frac{1}{2}$$\n```\n\n价格 \\$5 和 $10，保持原样。");
+    scratch.insertMarkdownText(codeMath);
+    check(!scratch.toHtml().contains("nocturne-math:"), "code and escaped currency remain literal");
+    scratch.clear();
+    scratch.insertMarkdownText(QStringLiteral("\\(x_i\\) 与 \\[\\frac{1}{2}\\]"));
+    check(scratch.toHtml().count("nocturne-math:") == 2, "backslash delimiters work in Markdown");
+    const QString webMath = QStringLiteral("<p>公式 <span class=\"katex\"><span class=\"katex-mathml\"><math><semantics><mi>x</mi><annotation encoding=\"application/x-tex\">x_i=\\frac{1}{2}</annotation></semantics></math></span><span class=\"katex-html\">DUPLICATE</span></span> 结束</p>");
+    scratch.setHtml(webMath);
+    check(scratch.toHtml().count("nocturne-math:") == 1 && !scratch.toPlainText().contains("DUPLICATE")
+        && scratch.toPlainText().contains("\\frac{1}{2}"), "browser math uses TeX annotation exactly once");
+    scratch.selectAll(); scratch.copy();
+    check(QApplication::clipboard()->text().contains("\\frac{1}{2}"), "copy retains formula source");
+    scratch.setHtml("<p>value $x_i$ end</p>");
+    check(scratch.toHtml().contains("nocturne-math:"), "existing notes with delimited formulas render on open");
+    scratch.clear(); scratch.insertFormula(QStringLiteral("\\frac{1}{2}"), false);
+    scratch.undo(); check(scratch.toPlainText().isEmpty(), "formula insertion undoes in one step");
+    scratch.redo(); check(scratch.toPlainText().contains("\\frac{1}{2}"), "formula insertion redoes with source");
+    scratch.clear(); scratch.insertFormula("x^2", true);
+    QTextCursor formulaSelection(scratch.document()); formulaSelection.setPosition(0); formulaSelection.setPosition(1, QTextCursor::KeepAnchor);
+    scratch.setTextCursor(formulaSelection); scratch.applyAlignment(Qt::AlignRight);
+    const int mathBlocks = scratch.document()->blockCount();
+    scratch.insertFormula("y^2", true);
+    check(scratch.document()->blockCount() == mathBlocks, "editing a formula does not insert extra blank paragraphs");
+    reopenedMath.setHtml(scratch.toHtml());
+    check(reopenedMath.document()->begin().blockFormat().alignment().testFlag(Qt::AlignRight), "reloading formulas preserves authored paragraph alignment");
+    scratch.setHtml("<h1>一级标题</h1><p>正文</p><h3>跳级标题</h3><h2>同名标题</h2><h2>同名标题</h2>");
+    DocumentOutline outline(&scratch); outline.resize(220, 400); outline.show(); outline.rebuild(true);
+    auto* headingTree = outline.findChild<QTreeWidget*>("headingTree");
+    check(outline.headingCount() == 4 && headingTree->topLevelItemCount() == 1
+        && headingTree->topLevelItem(0)->childCount() == 3, "outline nests skipped and repeated heading levels correctly");
+    auto* repeated = headingTree->topLevelItem(0)->child(2);
+    headingTree->itemClicked(repeated, 0);
+    check(scratch.textCursor().block().blockNumber() == 4, "outline jumps to the exact repeated heading");
+    auto cursorBeforeHeadings = QTextCursor(scratch.document()); cursorBeforeHeadings.insertText("新增 ");
+    headingTree->itemClicked(repeated, 0);
+    check(scratch.textCursor().block().text() == QStringLiteral("同名标题"), "outline anchors track edits before headings");
+    headingTree->topLevelItem(0)->setExpanded(false); outline.rebuild();
+    check(!headingTree->topLevelItem(0)->isExpanded(), "outline rebuild preserves collapsed sections");
+    scratch.setPlainText("new note"); outline.rebuild(true);
+    check(outline.headingCount() == 0 && headingTree->topLevelItemCount() == 0, "new note clears old outline");
+    outline.hide();
+    FolderComboBox choices;
+    choices.setFolders(database.listFolders(), true); choices.show(); choices.showPopup(); settle(30);
+    auto* choiceTree = choices.findChild<QTreeWidget*>("folderChoiceTree");
+    QTreeWidgetItem* rootChoice = nullptr;
+    for (int i = 0; i < choiceTree->topLevelItemCount(); ++i)
+        if (choiceTree->topLevelItem(i)->data(0, Qt::UserRole).toLongLong() == root) rootChoice = choiceTree->topLevelItem(i);
+    check(rootChoice && !rootChoice->isExpanded() && rootChoice->childCount() >= 2, "folder chooser starts at collapsed first-level folders");
+    if (rootChoice) {
+        const QPoint arrow = choiceTree->visualItemRect(rootChoice).topLeft() + QPoint(-10, 16);
+        QMouseEvent press(QEvent::MouseButtonPress, arrow, Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+        QMouseEvent release(QEvent::MouseButtonRelease, arrow, Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+        QApplication::sendEvent(choiceTree->viewport(), &press); QApplication::sendEvent(choiceTree->viewport(), &release);
+        check(rootChoice->isExpanded() && choices.findChild<QFrame*>("folderTreePopup")->isVisible()
+            && choices.currentData().toLongLong() == Database::AllFolders, "folder arrow expands without selecting or closing");
+        auto* childChoice = rootChoice->child(0); choiceTree->setCurrentItem(childChoice); choiceTree->itemClicked(childChoice, 0);
+        check(choices.currentData().toLongLong() == childChoice->data(0, Qt::UserRole).toLongLong(), "folder selection returns the exact child id");
+        choices.showPopup(); check(!rootChoice->isExpanded(), "folder popup resets expansion on reopening"); choices.hidePopup();
+    }
+    choices.hide();
+    QSettings().remove("navigation/expandedFoldersV2");
+    NotebookTree compactTree; compactTree.rebuildFolders(database.listFolders());
+    compactTree.addNote("fixture", childA); compactTree.finishRebuild(false); compactTree.setCurrentRow(0, false);
+    bool closed = true;
+    for (int i = 0; i < compactTree.topLevelItemCount(); ++i) closed &= !compactTree.topLevelItem(i)->isExpanded();
+    check(closed, "restoring the current note does not expand top-level navigation folders");
+    compactTree.rebuildFolders(database.listFolders()); compactTree.addNote("fixture", childA); compactTree.finishRebuild(true);
+    compactTree.rebuildFolders(database.listFolders()); compactTree.addNote("fixture", childA); compactTree.finishRebuild(false);
+    closed = true;
+    for (int i = 0; i < compactTree.topLevelItemCount(); ++i) closed &= !compactTree.topLevelItem(i)->isExpanded();
+    check(closed, "temporary search expansion does not overwrite normal navigation state");
+    scratch.clear();
     scratch.setPlainText(QStringLiteral("语义标题"));
     scratch.applyHeadingLevel(4);
     check(scratch.textCursor().blockFormat().headingLevel() == 4
@@ -280,6 +376,14 @@ bool runDocumentWorkflowTests(Database& database, MainWindow& window, const QStr
     settle(80);
     check(headings->grab().save(QDir(outputDirectory).filePath("Nocturne-heading-menu.png")), "heading menu screenshot saves");
     headings->hide();
+    auto* imageTools = window.findChild<QToolButton*>(QStringLiteral("imageToolsButton"));
+    auto* alignLeft = window.findChild<QToolButton*>(QStringLiteral("alignLeftButton"));
+    auto* alignCenter = window.findChild<QToolButton*>(QStringLiteral("alignCenterButton"));
+    auto* alignRight = window.findChild<QToolButton*>(QStringLiteral("alignRightButton"));
+    check(imageTools && imageTools->menu() && imageTools->menu()->actions().size() >= 6,
+        "image scaling and image alignment menu is present");
+    check(alignLeft && alignCenter && alignRight,
+        "top toolbar exposes left, center, and right text alignment actions");
 
     // Standard Qt editing actions retain their built-in behavior and Chinese labels.
     editor->locateTodo(todo.anchor);
@@ -368,9 +472,13 @@ bool runDocumentWorkflowTests(Database& database, MainWindow& window, const QStr
     {
         NoteEditor media;
         media.resize(640, 600); media.show();
+        QTemporaryDir mediaSource;
         QImage panorama(2000, 240, QImage::Format_RGB32); panorama.fill(Qt::darkCyan);
-        media.document()->addResource(QTextDocument::ImageResource, QUrl("test-panorama"), panorama);
-        media.setHtml("<p style='line-height:160%'><img src='test-panorama' width='2000' height='900'></p><p>After image</p>");
+        const QString panoramaPath = mediaSource.path() + QStringLiteral("/panorama.png");
+        panorama.save(panoramaPath);
+        const QString panoramaUrl = QUrl::fromLocalFile(panoramaPath).toString();
+        media.document()->addResource(QTextDocument::ImageResource, QUrl(panoramaUrl), panorama);
+        media.setHtml(QStringLiteral("<p style='line-height:160%'><img src='%1' width='2000' height='900'></p><p>After image</p>").arg(panoramaUrl));
         settle(50);
         QTextCursor img(media.document()); img.movePosition(QTextCursor::NextCharacter, QTextCursor::KeepAnchor);
         auto size = media.intrinsicSize(media.document(), 0, img.charFormat());
@@ -395,17 +503,11 @@ bool runDocumentWorkflowTests(Database& database, MainWindow& window, const QStr
         imageMouse(QEvent::MouseButtonDblClick, Qt::LeftButton);
         check(previewOpened, "double click opens image preview instead of caption dialog");
         settle(QApplication::doubleClickInterval() + 30);
-        check(!QApplication::activeModalWidget(), "double click cancels delayed caption editor");
-        bool captionOpened = false;
-        QTimer::singleShot(QApplication::doubleClickInterval() + 100, &media, [&] {
-            auto* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget());
-            captionOpened = dialog && dialog->windowTitle().contains(QStringLiteral("图片描述"));
-            if (dialog) dialog->reject();
-        });
+        check(!QApplication::activeModalWidget(), "double click closes without a delayed caption editor");
         imageMouse(QEvent::MouseButtonPress, Qt::LeftButton);
         imageMouse(QEvent::MouseButtonRelease, Qt::NoButton);
         settle(QApplication::doubleClickInterval() + 180);
-        check(captionOpened, "single click opens optional caption editor");
+        check(media.hasImageAtCursor() && !QApplication::activeModalWidget(), "single click selects the image without opening a dialog");
         const QString beforeCaption = media.toPlainText();
         media.setImageCaption(0, QStringLiteral("全景描述"));
         check(media.toPlainText().contains(QStringLiteral("全景描述")) && media.toPlainText().contains("After image"), "caption inserts below image and preserves following text");
@@ -417,6 +519,53 @@ bool runDocumentWorkflowTests(Database& database, MainWindow& window, const QStr
         check(!media.toPlainText().contains(QStringLiteral("全景描述")) && media.toPlainText().contains(QStringLiteral("更新描述")), "caption edits in place after HTML reload");
         media.setImageCaption(0, QString());
         check(!media.toPlainText().contains(QStringLiteral("更新描述")) && media.toPlainText().contains("After image"), "empty caption removes only description");
+        media.setHtml(QStringLiteral("<p><img src='%1' width='2000' height='240'></p><p>正文段落</p>").arg(panoramaUrl));
+        QTextCursor selectedImage(media.document()); selectedImage.setPosition(0);
+        selectedImage.movePosition(QTextCursor::NextCharacter, QTextCursor::KeepAnchor);
+        media.setTextCursor(selectedImage);
+        const qreal fitWidth = media.intrinsicSize(media.document(), 0, selectedImage.charFormat()).width();
+        check(media.hasImageAtCursor(), "image selection is available to layout controls");
+        check(media.setCurrentImageScale(150), "image scale control accepts a larger display size");
+        auto scaledImage = media.textCursor().charFormat().toImageFormat();
+        check(scaledImage.width() > fitWidth && qAbs(scaledImage.height() / scaledImage.width() - 0.12) < 0.001,
+              "image scaling changes width while preserving source ratio");
+        check(media.toHtml().contains(QStringLiteral("nocturne-size")), "manual image size is persisted in HTML");
+        const auto resizedHtml = media.toHtml();
+        media.setHtml(resizedHtml);
+        QTextCursor reloadedImage(media.document()); reloadedImage.setPosition(0);
+        reloadedImage.movePosition(QTextCursor::NextCharacter, QTextCursor::KeepAnchor);
+        media.setTextCursor(reloadedImage);
+        const qreal reloadedWidth = media.intrinsicSize(media.document(), 0, reloadedImage.charFormat()).width();
+        check(qAbs(reloadedWidth - scaledImage.width()) <= 0.1,
+              "image display size survives HTML reload");
+        check(media.setCurrentImageScale(50), "image scale control accepts a smaller display size");
+        const qreal smallerWidth = media.textCursor().charFormat().toImageFormat().width();
+        check(smallerWidth < scaledImage.width(), "image can be reduced without changing the attachment");
+        media.undo();
+        check(media.textCursor().charFormat().toImageFormat().width() == scaledImage.width(), "image size change is undoable");
+        media.setCurrentImageScale(80);
+        media.setTextCursor(reloadedImage);
+        const qreal dragStartWidth = media.textCursor().charFormat().toImageFormat().width();
+        const QRectF imageRect = media.currentImageRect();
+        const QPoint dragFrom(qRound(imageRect.right()) - 3, qRound(imageRect.center().y()));
+        const QPoint dragTo = dragFrom + QPoint(36, 0);
+        QMouseEvent resizePress(QEvent::MouseButtonPress, dragFrom, dragFrom, Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+        QMouseEvent resizeMove(QEvent::MouseMove, dragTo, dragTo, Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+        QMouseEvent resizeRelease(QEvent::MouseButtonRelease, dragTo, dragTo, Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+        QApplication::sendEvent(media.viewport(), &resizePress);
+        QApplication::sendEvent(media.viewport(), &resizeMove);
+        QApplication::sendEvent(media.viewport(), &resizeRelease);
+        check(media.textCursor().charFormat().toImageFormat().width() > dragStartWidth, "dragging image edge changes display width");
+        media.applyAlignment(Qt::AlignRight);
+        check(media.document()->firstBlock().blockFormat().alignment().testFlag(Qt::AlignRight), "image paragraph can align right");
+        media.applyAlignment(Qt::AlignHCenter);
+        check(media.document()->firstBlock().blockFormat().alignment().testFlag(Qt::AlignHCenter), "image paragraph can align center");
+        media.setPlainText(QStringLiteral("第一段\n第二段\n第三段"));
+        media.selectAll(); media.applyAlignment(Qt::AlignHCenter);
+        bool allCentered = true;
+        for (auto block = media.document()->begin(); block.isValid(); block = block.next())
+            allCentered &= block.blockFormat().alignment().testFlag(Qt::AlignHCenter);
+        check(allCentered, "multi-paragraph text alignment applies to every selected paragraph");
         media.clear(); media.createTable(3, 2);
         auto* table = media.textCursor().currentTable();
         check(table && table->rows()==3 && table->columns()==2, "manual table creates editable cells");
@@ -462,6 +611,47 @@ bool runDocumentWorkflowTests(Database& database, MainWindow& window, const QStr
         const auto bytes = snapshot.readAll(); snapshot.close();
         check(!bytes.isEmpty() && prepareDailyData(database.dataDirectory(), destination, &migrationError), "existing destination is retained on repeated migration");
         snapshot.open(QIODevice::ReadOnly); check(snapshot.readAll() == bytes, "repeat migration does not overwrite current data"); snapshot.close();
+    }
+    {
+        QTemporaryDir linkedRoot;
+        const QString sourcePath = linkedRoot.path() + QStringLiteral("/linked.md");
+        QFile source(sourcePath); source.open(QIODevice::WriteOnly); source.write("# Linked\n\nfirst"); source.close();
+        QString linkedHtml, linkedPlain, linkError; QByteArray sourceBytes;
+        check(DocumentImporter::readDocument(sourcePath, &linkedHtml, &linkedPlain, &sourceBytes, &linkError), "linked Markdown source can be parsed without copying it");
+        bool skipped = false;
+        const qint64 linkedId = database.linkNote(QFileInfo(sourcePath).canonicalFilePath(),
+            QCryptographicHash::hash(sourceBytes, QCryptographicHash::Sha256), "md", "linked",
+            linkedHtml, linkedPlain, Database::UnfiledFolder, &skipped, &linkError);
+        check(linkedId > 0 && !skipped && database.linkedSource(linkedId).has_value(), "linked source stores a path relation");
+        const auto linked = database.linkedSource(linkedId);
+        check(linked && linked->sourcePath == QFileInfo(sourcePath).canonicalFilePath(), "linked source path remains canonical");
+        source.open(QIODevice::WriteOnly); source.resize(0); source.write("# Linked\n\nupdated"); source.close();
+        check(DocumentImporter::readDocument(sourcePath, &linkedHtml, &linkedPlain, &sourceBytes, &linkError), "changed linked source can be reread");
+        skipped = false;
+        const qint64 updatedId = database.linkNote(QFileInfo(sourcePath).canonicalFilePath(),
+            QCryptographicHash::hash(sourceBytes, QCryptographicHash::Sha256), "md", "linked",
+            linkedHtml, linkedPlain, Database::UnfiledFolder, &skipped, &linkError);
+        check(updatedId == linkedId && !skipped && database.note(linkedId)->plainText.contains("updated"), "rescan updates the same linked note");
+    }
+    {
+        const QString demo = QStringLiteral("# 测向约束的几何表示\n\n设第 $i$ 个检测点为 $S_i=(x_i,y_i)$，将角度换算为弧度：\n\n$$\n\\varphi_i=\\frac{\\pi\\theta_i}{180}\n$$\n\n## 边界向量\n\n$$\nv_i=\\begin{pmatrix}\\cos(\\varphi_i-\\alpha)\\\\\\sin(\\varphi_i-\\alpha)\\end{pmatrix}\n$$\n\n### 误差与范围\n\n允许误差 $\\alpha=\\frac{\\pi}{180}$，范围为 $[\\varphi_i-\\alpha,\\varphi_i+\\alpha]$。\n\n## 汇总\n\n$$\nE=\\sum_{i=1}^{n}\\sqrt{x_i^2+y_i^2}\n$$");
+        NoteEditor sample; sample.insertMarkdownText(demo);
+        const auto sampleId = database.createNote(QStringLiteral("公式与大纲回归"), sample.toHtml(), sample.toPlainText(), &error);
+        check(sampleId > 0, "math example saves in isolated test database");
+        window.findChild<QComboBox*>(QStringLiteral("folderFilter"))->setCurrentIndex(0);
+        window.findChild<QLineEdit*>(QStringLiteral("searchEdit"))->setText(QStringLiteral("公式与大纲回归")); settle();
+        auto* body = window.findChild<NoteEditor*>(QStringLiteral("noteEditor"));
+        auto* toggle = window.findChild<QToolButton*>(QStringLiteral("outlineButton"));
+        toggle->click(); settle(200);
+        auto* panel = window.findChild<DocumentOutline*>(QStringLiteral("documentOutline"));
+        check(panel->isVisible() && panel->headingCount() == 4, "opening a note connects its heading outline");
+        check(body->markdownForExport().contains("\\varphi_i"), "loaded note retains LaTeX source");
+        window.resize(1500, 960); settle(100);
+        check(window.grab().save(QDir(outputDirectory).filePath(QStringLiteral("Nocturne-math-outline.png"))), "math and outline screenshot saves");
+        auto* folder = static_cast<FolderComboBox*>(window.findChild<QComboBox*>(QStringLiteral("noteFolderCombo")));
+        folder->showPopup(); settle(50);
+        check(folder->findChild<QFrame*>(QStringLiteral("folderTreePopup"))->grab().save(QDir(outputDirectory).filePath(QStringLiteral("Nocturne-folder-tree.png"))), "folder chooser screenshot saves");
+        folder->hidePopup(); toggle->click();
     }
     std::cout << (ok ? "PASS" : "FAIL") << ": document workflows (Markdown, task anchors, folders, imports)\n";
     return ok;

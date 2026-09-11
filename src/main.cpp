@@ -1,9 +1,11 @@
 #include "Branding.h"
+#include "AiExchange.h"
 #include "ProfileMigration.h"
 #include "BackupManager.h"
 #include "Database.h"
 #include "GlobalHotkey.h"
 #include "MainWindow.h"
+#include "DocumentImporter.h"
 #include "NocturneDialogs.h"
 #include "NocturneStyle.h"
 
@@ -23,9 +25,11 @@
 #include <QUrl>
 #include <QCryptographicHash>
 #include <QUuid>
+#include <QTextStream>
 
 int main(int argc, char* argv[])
 {
+    for(int i=1;i<argc;++i)if(QString::fromLocal8Bit(argv[i])==QStringLiteral("--mcp"))return AiExchange::runMcp(argc,argv);
     QApplication app(argc, argv);
     const bool startupBenchmark = app.arguments().contains(
         QStringLiteral("--benchmark-startup"));
@@ -33,6 +37,7 @@ int main(int argc, char* argv[])
         QStringLiteral("--benchmark-background"));
     const bool benchmarkProfile = startupBenchmark || backgroundBenchmark;
     const bool testProfile = app.arguments().contains(QStringLiteral("--test-profile"));
+    const bool linkProjectDocs = app.arguments().contains(QStringLiteral("--link-project-docs"));
     if ((testProfile || benchmarkProfile)
         && qEnvironmentVariableIntValue("NOCTURNE_ALLOW_TEST_PROFILE") != 1) {
         if (benchmarkProfile) {
@@ -87,6 +92,10 @@ int main(int argc, char* argv[])
                        : QStringLiteral("FeatherNotePrototype.lock"))));
     instanceLock.setStaleLockTime(0);
     if (!instanceLock.tryLock(100)) {
+        if (linkProjectDocs) {
+            qWarning("Night is already running; document linking was not started.");
+            return 3;
+        }
         QSettings settings;
         QKeySequence configured(
             settings.value(GlobalHotkey::settingsKey(),
@@ -113,10 +122,22 @@ int main(int argc, char* argv[])
     }
     Database database;
     if (!database.open(&error)) {
+        if (linkProjectDocs) {
+            qWarning().noquote() << QStringLiteral("无法初始化资料库：") + error;
+            return 1;
+        }
         NocturneDialogs::critical(nullptr,
                               QStringLiteral("无法打开本地数据"),
                               QStringLiteral("夜航无法初始化本地数据库：\n%1").arg(error));
         return 1;
+    }
+
+    if (linkProjectDocs) {
+        QString report;
+        const bool ok = DocumentImporter::linkRecentProjectDocs(
+            QStringLiteral("D:/代码玩具测试"), 60, &report);
+        QTextStream(stdout) << report << Qt::endl;
+        return ok ? 0 : 1;
     }
 
     MainWindow window(&database);

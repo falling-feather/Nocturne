@@ -46,7 +46,7 @@ QString sansFamily();
 
 } // namespace NocturneUi
 
-class NocturneComboBox final : public QComboBox
+class NocturneComboBox : public QComboBox
 {
 public:
     using QComboBox::QComboBox;

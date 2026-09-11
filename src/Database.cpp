@@ -1,4 +1,5 @@
 #include "Database.h"
+#include "WorkspaceStore.h"
 
 #include <QCryptographicHash>
 #include <QDir>
@@ -18,7 +19,7 @@
 
 namespace {
 
-constexpr int kSchemaVersion = 5;
+constexpr int kSchemaVersion = 7;
 constexpr int kExcerptLength = 180;
 
 void clearError(QString *error)
@@ -423,7 +424,9 @@ bool Database::open(QString *error)
             QStringLiteral("CREATE TABLE IF NOT EXISTS todo_links (todo_id INTEGER PRIMARY KEY REFERENCES todos(id) ON DELETE CASCADE, note_id INTEGER NOT NULL REFERENCES notes(id) ON DELETE CASCADE, anchor TEXT NOT NULL UNIQUE, active INTEGER NOT NULL DEFAULT 1)"),
             QStringLiteral("CREATE INDEX IF NOT EXISTS idx_todo_links_note ON todo_links(note_id)"),
             QStringLiteral("CREATE TABLE IF NOT EXISTS import_folders (source_path TEXT COLLATE NOCASE PRIMARY KEY, folder_id INTEGER NOT NULL REFERENCES folders(id) ON DELETE CASCADE)"),
-            QStringLiteral("CREATE TABLE IF NOT EXISTS import_sources (source_path TEXT COLLATE NOCASE NOT NULL, source_hash BLOB NOT NULL, note_id INTEGER NOT NULL UNIQUE REFERENCES notes(id) ON DELETE CASCADE, PRIMARY KEY(source_path, source_hash))")}) {
+            QStringLiteral("CREATE TABLE IF NOT EXISTS import_sources (source_path TEXT COLLATE NOCASE NOT NULL, source_hash BLOB NOT NULL, note_id INTEGER NOT NULL UNIQUE REFERENCES notes(id) ON DELETE CASCADE, PRIMARY KEY(source_path, source_hash))"),
+            QStringLiteral("CREATE TABLE IF NOT EXISTS linked_folders (source_path TEXT COLLATE NOCASE PRIMARY KEY, folder_id INTEGER NOT NULL REFERENCES folders(id) ON DELETE CASCADE)"),
+            QStringLiteral("CREATE TABLE IF NOT EXISTS linked_sources (source_path TEXT COLLATE NOCASE PRIMARY KEY, source_kind TEXT NOT NULL, source_hash BLOB NOT NULL, note_id INTEGER NOT NULL UNIQUE REFERENCES notes(id) ON DELETE CASCADE, linked_at TEXT NOT NULL)")}) {
             if (!executeSchemaStatement(database, statement, error)) { database.rollback(); return false; }
         }
 
@@ -587,6 +590,7 @@ bool Database::open(QString *error)
             }
         }
 
+        if (!WorkspaceStore::initialize(database, error)) { database.rollback(); return false; }
         if (!executeSchemaStatement(database,
                                     QStringLiteral("PRAGMA user_version = %1")
                                         .arg(kSchemaVersion),
@@ -787,13 +791,17 @@ bool Database::updateNote(qint64 id,
                           const QString &title,
                           const QString &html,
                           const QString &plainText,
-                          QString *error)
+                          QString *error, const QString& reason,
+                          const QByteArray& expectedHash, const QByteArray* sourceBytes,
+                          const QString& newSourcePath, const QString& newSourceKind)
 {
     clearError(error);
     QSqlDatabase database = openedDatabase(connectionName_, error);
     if (!database.isValid() || !beginTransaction(database, error))
         return false;
 
+    WorkspaceStore store(*this);
+    if (!store.capture(id, QStringLiteral("保存前"), error)) { database.rollback(); return false; }
     const QString safeHtml = nonNullText(html);
     const QString safePlainText = nonNullText(plainText);
     const QByteArray hash = contentHash(safeHtml);
@@ -804,7 +812,9 @@ bool Database::updateNote(qint64 id,
         "body_revision = CASE WHEN content_hash = :old_hash "
         "THEN body_revision ELSE body_revision + 1 END, "
         "content_hash = :content_hash, updated_at = :updated_at "
-        "WHERE id = :id AND deleted_at IS NULL"));
+        "WHERE id = :id AND deleted_at IS NULL")
+        + (expectedHash.isEmpty() ? QString() : QStringLiteral(" AND content_hash = :expected_hash")));
+    if (!expectedHash.isEmpty()) query.bindValue(QStringLiteral(":expected_hash"), expectedHash);
     query.bindValue(QStringLiteral(":title"), nonNullText(title));
     query.bindValue(QStringLiteral(":html"), safeHtml);
     query.bindValue(QStringLiteral(":plain_text"), safePlainText);
@@ -820,11 +830,23 @@ bool Database::updateNote(qint64 id,
         return false;
     }
     if (query.numRowsAffected() == 0) {
-        setError(error, QStringLiteral("保存笔记失败：笔记不存在或已删除。"));
+        setError(error, QStringLiteral("保存笔记失败：笔记已变化、被删除或不存在。请比较当前版本。"));
         database.rollback();
         return false;
     }
     if (!syncTodoLinks(database, id, safeHtml, error)) { database.rollback(); return false; }
+    if (sourceBytes) {
+        QSqlQuery source(database); source.prepare(newSourcePath.isEmpty()?QStringLiteral("UPDATE linked_sources SET source_hash=?,linked_at=? WHERE note_id=?")
+            :QStringLiteral("UPDATE linked_sources SET source_hash=?,linked_at=?,source_path=?,source_kind=? WHERE note_id=?"));
+        source.addBindValue(QCryptographicHash::hash(*sourceBytes, QCryptographicHash::Sha256));
+        source.addBindValue(toStorageDateTime(QDateTime::currentDateTimeUtc()));
+        if(!newSourcePath.isEmpty()){source.addBindValue(newSourcePath);source.addBindValue(newSourceKind);}
+        source.addBindValue(id);
+        if (!store.cacheSource(id, *sourceBytes, error) || !source.exec() || source.numRowsAffected()!=1) {
+            if (error && error->isEmpty()) *error = source.lastError().text(); database.rollback(); return false;
+        }
+    }
+    if (!store.capture(id, reason, error)) { database.rollback(); return false; }
     return commitTransaction(database, error);
 }
 
@@ -837,6 +859,7 @@ bool Database::renameNote(qint64 id,
     if (!database.isValid() || !beginTransaction(database, error))
         return false;
 
+    if(!WorkspaceStore(*this).capture(id,QStringLiteral("重命名前"),error)){database.rollback();return false;}
     QSqlQuery query(database);
     query.prepare(QStringLiteral(
         "UPDATE notes SET title = :title, updated_at = :updated_at "
@@ -855,6 +878,7 @@ bool Database::renameNote(qint64 id,
         database.rollback();
         return false;
     }
+    if(!WorkspaceStore(*this).capture(id,QStringLiteral("重命名"),error)){database.rollback();return false;}
     return commitTransaction(database, error);
 }
 
@@ -893,6 +917,7 @@ bool Database::softDeleteNote(qint64 id, QString *error)
     if (!database.isValid() || !beginTransaction(database, error))
         return false;
 
+    if (!WorkspaceStore(*this).capture(id, QStringLiteral("移入回收站前"), error)) { database.rollback(); return false; }
     const QString now = toStorageDateTime(QDateTime::currentDateTimeUtc());
     QSqlQuery query(database);
     query.prepare(QStringLiteral(
@@ -1283,8 +1308,10 @@ qint64 Database::saveStickyNote(qint64 id, const QString &text, QString *error)
     const QString html = stickyHtml(text);
     const QByteArray hash = contentHash(html);
     const QString now = toStorageDateTime(QDateTime::currentDateTimeUtc());
+    const bool creating=id<=0;
 
     if (id > 0) {
+        if(!WorkspaceStore(*this).capture(id,QStringLiteral("便签编辑前"),error)){database.rollback();return -1;}
         QSqlQuery update(database);
         update.prepare(QStringLiteral(
             "UPDATE notes SET html = :html, plain_text = :plain_text, "
@@ -1331,6 +1358,7 @@ qint64 Database::saveStickyNote(qint64 id, const QString &text, QString *error)
         }
     }
 
+    if(!WorkspaceStore(*this).capture(id,creating?QStringLiteral("便签创建"):QStringLiteral("编辑保存"),error)){database.rollback();return -1;}
     if (!commitTransaction(database, error))
         return -1;
     return id;
@@ -1530,12 +1558,111 @@ qint64 Database::importNote(const QString& sourcePath, const QByteArray& sourceH
     return commitTransaction(db, error) ? id : 0;
 }
 
+qint64 Database::linkNote(const QString& sourcePath, const QByteArray& sourceHash,
+    const QString& sourceKind, const QString& title, const QString& html,
+    const QString& plainText, qint64 folderId, bool* skipped, QString* error,const QByteArray* sourceBytes)
+{
+    clearError(error);
+    if (skipped) *skipped = false;
+    QSqlDatabase db = openedDatabase(connectionName_, error);
+    if (!db.isValid() || !beginTransaction(db, error)) return 0;
+    QSqlQuery existing(db);
+    existing.prepare(QStringLiteral("SELECT s.note_id,s.source_hash,n.deleted_at FROM linked_sources s JOIN notes n ON n.id=s.note_id WHERE s.source_path=?"));
+    existing.addBindValue(sourcePath);
+    if (!existing.exec()) { setError(error, existing.lastError().text()); db.rollback(); return 0; }
+    if (existing.next()) {
+        const qint64 id = existing.value(0).toLongLong();
+        const QByteArray previousHash = existing.value(1).toByteArray();
+        const bool deleted=!existing.value(2).isNull();
+        existing.finish();
+        if (deleted) {
+            db.rollback(); if (skipped) *skipped = true; return id;
+        }
+        if(previousHash==sourceHash){
+            if(sourceBytes && !WorkspaceStore(*this).cacheSource(id,*sourceBytes,error)){db.rollback();return 0;}
+            if(!commitTransaction(db,error))return 0;if(skipped)*skipped=true;return id;
+        }
+        if(!WorkspaceStore(*this).capture(id,QStringLiteral("外部更新前"),error)){db.rollback();return 0;}
+        QSqlQuery update(db);
+        update.prepare(QStringLiteral(
+            "UPDATE notes SET html=?, plain_text=?, excerpt=?, content_hash=?, "
+            "body_revision=body_revision+1, updated_at=? WHERE id=? AND deleted_at IS NULL"));
+        update.addBindValue(nonNullText(html)); update.addBindValue(nonNullText(plainText));
+        update.addBindValue(noteExcerpt(plainText)); update.addBindValue(contentHash(html));
+        update.addBindValue(toStorageDateTime(QDateTime::currentDateTimeUtc())); update.addBindValue(id);
+        if (!update.exec() || update.numRowsAffected() != 1) {
+            setError(error, update.lastError().text()); db.rollback(); return 0;
+        }
+        QSqlQuery source(db);
+        source.prepare(QStringLiteral("UPDATE linked_sources SET source_kind=?, source_hash=?, linked_at=? WHERE source_path=?"));
+        source.addBindValue(sourceKind); source.addBindValue(sourceHash);
+        source.addBindValue(toStorageDateTime(QDateTime::currentDateTimeUtc())); source.addBindValue(sourcePath);
+        if (!source.exec()) { setError(error, source.lastError().text()); db.rollback(); return 0; }
+        if(sourceBytes && !WorkspaceStore(*this).cacheSource(id,*sourceBytes,error)){db.rollback();return 0;}
+        if(!WorkspaceStore(*this).capture(id,QStringLiteral("外部同步"),error)){db.rollback();return 0;}
+        return commitTransaction(db, error) ? id : 0;
+    }
+    existing.finish();
+    const QString now = toStorageDateTime(QDateTime::currentDateTimeUtc());
+    QSqlQuery insert(db);
+    insert.prepare(QStringLiteral(
+        "INSERT INTO notes(folder_id,kind,title,html,plain_text,excerpt,body_revision,content_hash,created_at,updated_at) "
+        "VALUES(?,'note',?,?,?,?,1,?,?,?)"));
+    insert.addBindValue(nullableId(folderId)); insert.addBindValue(nonNullText(title));
+    insert.addBindValue(nonNullText(html)); insert.addBindValue(nonNullText(plainText));
+    insert.addBindValue(noteExcerpt(plainText)); insert.addBindValue(contentHash(html));
+    insert.addBindValue(now); insert.addBindValue(now);
+    if (!insert.exec()) { setError(error, insert.lastError().text()); db.rollback(); return 0; }
+    const qint64 id = insert.lastInsertId().toLongLong();
+    QSqlQuery source(db);
+    source.prepare(QStringLiteral("INSERT INTO linked_sources(source_path,source_kind,source_hash,note_id,linked_at) VALUES(?,?,?,?,?)"));
+    source.addBindValue(sourcePath); source.addBindValue(sourceKind); source.addBindValue(sourceHash);
+    source.addBindValue(id); source.addBindValue(now);
+    if (!source.exec()) { setError(error, source.lastError().text()); db.rollback(); return 0; }
+    if(sourceBytes && !WorkspaceStore(*this).cacheSource(id,*sourceBytes,error)){db.rollback();return 0;}
+    return commitTransaction(db, error) ? id : 0;
+}
+
 QString Database::noteSourcePath(qint64 noteId) const
 {
     QSqlQuery query(QSqlDatabase::database(connectionName_));
-    query.prepare(QStringLiteral("SELECT source_path FROM import_sources WHERE note_id=?"));
+    query.prepare(QStringLiteral(
+        "SELECT source_path FROM linked_sources WHERE note_id=? "
+        "UNION ALL SELECT source_path FROM import_sources WHERE note_id=? LIMIT 1"));
+    query.addBindValue(noteId);
     query.addBindValue(noteId);
     return query.exec() && query.next() ? query.value(0).toString() : QString();
+}
+
+std::optional<LinkedSourceRecord> Database::linkedSource(qint64 noteId, QString* error) const
+{
+    clearError(error);
+    QSqlQuery query(QSqlDatabase::database(connectionName_));
+    query.prepare(QStringLiteral("SELECT note_id,source_path,source_kind,source_hash,linked_at FROM linked_sources WHERE note_id=?"));
+    query.addBindValue(noteId);
+    if (!query.exec()) { setError(error, query.lastError().text()); return std::nullopt; }
+    if (!query.next()) return std::nullopt;
+    LinkedSourceRecord record;
+    record.noteId = query.value(0).toLongLong();
+    record.sourcePath = query.value(1).toString();
+    record.sourceKind = query.value(2).toString();
+    record.sourceHash = query.value(3).toByteArray();
+    record.linkedAt = fromStorageDateTime(query.value(4).toString());
+    return record;
+}
+
+bool Database::updateLinkedSourceHash(qint64 noteId, const QByteArray& sourceHash, QString* error)
+{
+    clearError(error);
+    QSqlDatabase db = openedDatabase(connectionName_, error);
+    if (!db.isValid() || !beginTransaction(db, error)) return false;
+    QSqlQuery query(db);
+    query.prepare(QStringLiteral("UPDATE linked_sources SET source_hash=?, linked_at=? WHERE note_id=?"));
+    query.addBindValue(sourceHash); query.addBindValue(toStorageDateTime(QDateTime::currentDateTimeUtc())); query.addBindValue(noteId);
+    if (!query.exec() || query.numRowsAffected() != 1) {
+        setError(error, query.lastError().text()); db.rollback(); return false;
+    }
+    return commitTransaction(db, error);
 }
 
 qint64 Database::createLinkedTodo(qint64 noteId, int expectedRevision, const QString& text,
@@ -1545,6 +1672,7 @@ qint64 Database::createLinkedTodo(qint64 noteId, int expectedRevision, const QSt
     if (text.trimmed().isEmpty() || anchor.isEmpty()) { setError(error, QStringLiteral("请选择需要设置为待办的文字。")); return 0; }
     QSqlDatabase db = openedDatabase(connectionName_, error);
     if (!db.isValid() || !beginTransaction(db, error)) return 0;
+    if(!WorkspaceStore(*this).capture(noteId,QStringLiteral("待办标记前"),error)){db.rollback();return 0;}
     QSqlQuery noteUpdate(db);
     noteUpdate.prepare(QStringLiteral("UPDATE notes SET html=?, plain_text=?, excerpt=?, content_hash=?, body_revision=body_revision+1, updated_at=? WHERE id=? AND body_revision=? AND kind='note' AND deleted_at IS NULL"));
     noteUpdate.addBindValue(html); noteUpdate.addBindValue(plainText); noteUpdate.addBindValue(noteExcerpt(plainText));
@@ -1565,6 +1693,7 @@ qint64 Database::createLinkedTodo(qint64 noteId, int expectedRevision, const QSt
         if (error && error->isEmpty()) *error = link.lastError().text();
         db.rollback(); return 0;
     }
+    if(!WorkspaceStore(*this).capture(noteId,QStringLiteral("设置待办"),error)){db.rollback();return 0;}
     return commitTransaction(db, error) ? id : 0;
 }
 
@@ -1599,6 +1728,40 @@ qint64 Database::ensureImportedFolder(const QString& sourcePath, const QString& 
     }
     QSqlQuery link(db);
     link.prepare(QStringLiteral("INSERT INTO import_folders(source_path,folder_id) VALUES(?,?)"));
+    link.addBindValue(sourcePath); link.addBindValue(id);
+    if (!link.exec()) { setError(error, link.lastError().text()); db.rollback(); return 0; }
+    return commitTransaction(db, error) ? id : 0;
+}
+
+qint64 Database::ensureLinkedFolder(const QString& sourcePath, const QString& name,
+    qint64 parentId, QString* error)
+{
+    clearError(error);
+    QSqlDatabase db = openedDatabase(connectionName_, error);
+    if (!db.isValid() || !beginTransaction(db, error)) return 0;
+    QSqlQuery known(db);
+    known.prepare(QStringLiteral("SELECT folder_id FROM linked_folders WHERE source_path=?"));
+    known.addBindValue(sourcePath);
+    if (!known.exec()) { setError(error, known.lastError().text()); db.rollback(); return 0; }
+    if (known.next()) { const qint64 id = known.value(0).toLongLong(); db.rollback(); return id; }
+    known.finish();
+    QSqlQuery existing(db);
+    existing.prepare(QStringLiteral("SELECT id FROM folders WHERE COALESCE(parent_id,0)=? AND name=? COLLATE NOCASE"));
+    existing.addBindValue(qMax<qint64>(0, parentId)); existing.addBindValue(name.simplified());
+    if (!existing.exec()) { setError(error, existing.lastError().text()); db.rollback(); return 0; }
+    qint64 id = existing.next() ? existing.value(0).toLongLong() : 0;
+    existing.finish();
+    if (!id) {
+        const QString now = toStorageDateTime(QDateTime::currentDateTimeUtc());
+        QSqlQuery folder(db);
+        folder.prepare(QStringLiteral("INSERT INTO folders(parent_id,name,sort_order,created_at,updated_at) SELECT ?,?,COALESCE(MAX(sort_order),-1)+1,?,? FROM folders WHERE COALESCE(parent_id,0)=?"));
+        folder.addBindValue(nullableId(parentId)); folder.addBindValue(name.simplified());
+        folder.addBindValue(now); folder.addBindValue(now); folder.addBindValue(qMax<qint64>(0, parentId));
+        if (!folder.exec()) { setError(error, folder.lastError().text()); db.rollback(); return 0; }
+        id = folder.lastInsertId().toLongLong();
+    }
+    QSqlQuery link(db);
+    link.prepare(QStringLiteral("INSERT INTO linked_folders(source_path,folder_id) VALUES(?,?)"));
     link.addBindValue(sourcePath); link.addBindValue(id);
     if (!link.exec()) { setError(error, link.lastError().text()); db.rollback(); return 0; }
     return commitTransaction(db, error) ? id : 0;

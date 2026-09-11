@@ -41,6 +41,7 @@
 #include <memory>
 
 bool runDocumentWorkflowTests(Database& database, MainWindow& window, const QString& outputDirectory);
+bool runWorkspaceUiTests(Database& database, MainWindow& window, const QString& outputDirectory);
 
 namespace {
 
@@ -482,6 +483,7 @@ int main(int argc, char* argv[])
 
 #ifdef Q_OS_WIN
     QString reboundHotkeyPortable;
+    if (QApplication::platformName() == QStringLiteral("windows")) {
     QWidget blockerWindow;
     blockerWindow.setObjectName(QStringLiteral("hotkeyConflictOwner"));
     blockerWindow.winId();
@@ -569,6 +571,9 @@ int main(int argc, char* argv[])
                         && trayLabelUpdated,
                     "successful rebind updates main and tray shortcut labels");
     }
+    } else {
+        std::cout << "SKIP: Win32 global hotkey conflict requires the windows platform (offscreen UI tests remain enabled)\n";
+    }
 #endif
 
     ok &= check(mainWindow->grab().save(
@@ -635,6 +640,7 @@ int main(int argc, char* argv[])
     }
 
     ok &= runDocumentWorkflowTests(*database, *mainWindow, outputDirectory);
+    ok &= runWorkspaceUiTests(*database, *mainWindow, outputDirectory);
     mainWindow.reset();
 
 #ifdef Q_OS_WIN

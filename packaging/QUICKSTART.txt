@@ -1,16 +1,28 @@
-夜航 Nocturne 0.2.0 · Windows x64
+夜航 Nocturne 0.3.0 · Windows x64
 
 1. 把 ZIP 完整解压到一个固定目录。
 2. 双击 Nocturne.exe 启动。无需安装 Qt、Python 或开发工具。
-3. 保留同目录 DLL、platforms、sqldrivers 和 imageformats 文件夹。
+3. 保留同目录 DLL、辅助程序、脚本、platforms、sqldrivers 和 imageformats 文件夹。
 
 常用操作
 Ctrl+N             新建笔记
 Ctrl+K             搜索笔记
+Ctrl+F / Ctrl+H    当前笔记查找 / 替换
+Ctrl+Shift+O       本文标题大纲
+Alt+Left / Right  笔记前后跳转
+Ctrl+Shift+M       语音输入与转写
 F11 / Esc          进入 / 退出专注
 Ctrl+Alt+N         全局新建便签（可在设置中更改）
 Ctrl+Shift+B       收舟入册
 左下角调色盘        切换夜航、雾港、月白主题
+
+新功能入口
+外部文档：源码 / 预览切换，来源栏可比较、重载和重新关联文件；目录右键可重新关联位置。
+恢复中心：文件菜单，可找回回收站、保存失败草稿和备份中的单篇笔记。
+航迹：编辑菜单，可保存检查点、查看历史、恢复正文和导出修改差异。
+模板与 AI 交接：管理菜单。MCP 只读取本次选择的笔记或选区，修改需在夜航内确认。
+语音：首次使用点击“安装语音组件”，约 36 MiB 下载；安装后本机中文转写，音频不上传。
+只在点击“开始录音”后打开麦克风，转写结果可校对后插入或新建笔记。
 
 关闭主窗口后仍驻留系统托盘。完全退出请右击托盘图标并选择“退出”。
 已经在后台运行时，请从托盘打开窗口。
@@ -21,10 +33,11 @@ Ctrl+Shift+B       收舟入册
 其中有 notebook.sqlite3、attachments 和 backups。
 软件目录可移动，用户笔记不会跟着软件目录移动。
 “文件 → 立即备份本地资料”可创建一致性备份。
-恢复前请完全退出软件，并先保留现有数据副本。
+单篇恢复可使用恢复中心；人工替换整个数据库前必须完全退出并保留现有资料副本。
+版本升级在原资料位置迁移结构；不要用旧程序打开已升级的数据。
 
 版本与反馈
 https://github.com/falling-feather/Nocturne
-https://github.com/falling-feather/Nocturne/releases/tag/v0.2.0
+https://github.com/falling-feather/Nocturne/releases/tag/v0.3.0
 当前为桌面原型版本，尚未进行代码签名。
 第三方许可证在 licenses/；精确版本源码入口见 THIRD_PARTY_SOURCES.md。

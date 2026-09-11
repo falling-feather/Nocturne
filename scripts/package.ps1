@@ -45,6 +45,9 @@ if (-not (Test-Path -LiteralPath $exe)) {
     throw "找不到构建产物：$exe"
 }
 Copy-Item -LiteralPath $exe -Destination (Join-Path $resolvedPackage 'Nocturne.exe')
+Copy-Item -LiteralPath (Join-Path $BuildDirectory 'NocturneAudio.exe') -Destination $resolvedPackage
+Copy-Item -LiteralPath (Join-Path $repoRoot 'scripts/install-voice.ps1') -Destination $resolvedPackage
+Copy-Item -LiteralPath (Join-Path $repoRoot 'scripts/voice-licenses') -Destination $resolvedPackage -Recurse -Force
 Copy-Item -LiteralPath (Join-Path $repoRoot 'packaging\qt.conf') -Destination $resolvedPackage
 
 $qtLibraries = @('Qt6Core.dll', 'Qt6Gui.dll', 'Qt6Widgets.dll', 'Qt6Sql.dll')
@@ -100,6 +103,11 @@ do {
 # 随公开分发物带上供应商原始许可和精确版本源码包入口。
 python (Join-Path $repoRoot 'scripts\collect-runtime-notices.py') --package-dir $resolvedPackage
 if ($LASTEXITCODE -ne 0) { throw '运行库许可收集失败。' }
+$mathLicenses = Join-Path $BuildDirectory 'math-runtime/licenses'
+if (-not (Test-Path -LiteralPath $mathLicenses)) { throw '缺少公式渲染依赖许可；请先重新配置并构建。' }
+foreach ($licenseDirectory in Get-ChildItem -LiteralPath $mathLicenses -Directory) {
+    Copy-Item -LiteralPath $licenseDirectory.FullName -Destination (Join-Path $resolvedPackage 'licenses') -Recurse -Force
+}
 Copy-Item -LiteralPath (Join-Path $repoRoot 'THIRD_PARTY_NOTICES.md') -Destination $resolvedPackage
 Copy-Item -LiteralPath (Join-Path $repoRoot 'packaging\QUICKSTART.txt') -Destination $resolvedPackage
 

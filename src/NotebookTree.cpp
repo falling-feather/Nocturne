@@ -18,8 +18,7 @@ NotebookTree::NotebookTree(QWidget* parent) : QTreeWidget(parent)
     setDragDropMode(QAbstractItemView::InternalMove); setDefaultDropAction(Qt::MoveAction);
     header()->setSectionResizeMode(0, QHeaderView::Stretch);
     header()->setSectionResizeMode(1, QHeaderView::Fixed); header()->resizeSection(1, 32);
-    m_hasSavedExpansion = QSettings().contains("navigation/expandedFolders");
-    for (const QString& value : QSettings().value("navigation/expandedFolders").toStringList())
+    for (const QString& value : QSettings().value("navigation/expandedFoldersV2").toStringList())
         m_expanded.insert(value.toLongLong());
     auto remember = [this](QTreeWidgetItem* raw) {
         auto* item = static_cast<NotebookItem*>(raw);
@@ -28,8 +27,7 @@ NotebookTree::NotebookTree(QWidget* parent) : QTreeWidget(parent)
         if (item->isExpanded()) m_expanded.insert(id); else m_expanded.remove(id);
         QStringList values;
         for (qint64 expanded : m_expanded) values.append(QString::number(expanded));
-        QSettings().setValue("navigation/expandedFolders", values);
-        m_hasSavedExpansion = true;
+        QSettings().setValue("navigation/expandedFoldersV2", values);
     };
     connect(this, &QTreeWidget::itemExpanded, this, remember);
     connect(this, &QTreeWidget::itemCollapsed, this, remember);
@@ -87,17 +85,18 @@ void NotebookTree::finishRebuild(bool searching)
         item->QTreeWidgetItem::setText(1, QString::number(count));
         item->setHidden(searching && count == 0);
         const qint64 id = item->data(Qt::UserRole).toLongLong();
-        item->setExpanded(searching || m_expanded.contains(id) || (!m_hasSavedExpansion && item->parent() == nullptr));
+        item->setExpanded(searching || m_expanded.contains(id));
         return count;
     };
     for (int i = 0; i < topLevelItemCount(); ++i) visit(static_cast<NotebookItem*>(topLevelItem(i)));
     m_restoring = false;
 }
-void NotebookTree::setCurrentRow(int row)
+void NotebookTree::setCurrentRow(int row, bool reveal)
 {
     auto* selected = item(row);
     if (!selected) return;
-    setCurrentItem(selected);
+    selectionModel()->setCurrentIndex(indexFromItem(selected), QItemSelectionModel::ClearAndSelect);
+    if (!reveal) return;
     for (auto* parent = selected->parent(); parent; parent = parent->parent()) parent->setExpanded(true);
     scrollToItem(selected);
 }

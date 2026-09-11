@@ -1,18 +1,24 @@
 #include "NoteEditor.h"
 #include "NocturneStyle.h"
 #include "NocturneDialogs.h"
+#include "MathSupport.h"
+#include <QPlainTextEdit>
+#include <QCheckBox>
 #include <QAbstractTextDocumentLayout>
 #include <QPainter>
 #include <QTextTable>
+#include <QTextImageFormat>
 #include <QFormLayout>
 #include <QSpinBox>
 #include <QDialogButtonBox>
 #include <QResizeEvent>
 #include <QTimer>
 #include <QScrollArea>
+#include <QScrollBar>
 #include <QLabel>
 #include <QPushButton>
 #include <QVBoxLayout>
+#include <QWheelEvent>
 
 #include <QFileInfo>
 #include <QImageReader>
@@ -20,6 +26,7 @@
 #include <QPixmap>
 #include <QTextDocument>
 #include <QUrl>
+#include <QUrlQuery>
 #include <QVariant>
 #include <QSyntaxHighlighter>
 #include <QTextBlock>
@@ -34,6 +41,7 @@
 #include <QApplication>
 
 #include <algorithm>
+#include <functional>
 #include <memory>
 
 namespace {
@@ -84,11 +92,96 @@ bool isImageFile(const QString& path)
         || suffix == QStringLiteral("jpeg") || suffix == QStringLiteral("bmp")
         || suffix == QStringLiteral("gif") || suffix == QStringLiteral("webp");
 }
+
+const QString kManualImageSizeQuery = QStringLiteral("nocturne-size");
+
+class ImagePreviewArea final : public QScrollArea
+{
+public:
+    using ZoomHandler = std::function<void(qreal, const QPoint&)>;
+
+    explicit ImagePreviewArea(QWidget* parent = nullptr) : QScrollArea(parent)
+    {
+        setAlignment(Qt::AlignCenter);
+        setCursor(Qt::OpenHandCursor);
+        setMouseTracking(true);
+    }
+
+    ZoomHandler zoomRequested;
+
+protected:
+    void wheelEvent(QWheelEvent* event) override
+    {
+        if (event->angleDelta().y() != 0 && zoomRequested) {
+            const qreal factor = event->angleDelta().y() > 0 ? 1.12 : 1.0 / 1.12;
+            zoomRequested(factor, event->position().toPoint());
+            event->accept();
+            return;
+        }
+        QScrollArea::wheelEvent(event);
+    }
+
+    void mousePressEvent(QMouseEvent* event) override
+    {
+        if (event->button() == Qt::LeftButton) {
+            m_panning = true;
+            m_last = event->position().toPoint();
+            setCursor(Qt::ClosedHandCursor);
+            event->accept();
+            return;
+        }
+        QScrollArea::mousePressEvent(event);
+    }
+
+    void mouseMoveEvent(QMouseEvent* event) override
+    {
+        if (m_panning) {
+            const QPoint delta = event->position().toPoint() - m_last;
+            m_last = event->position().toPoint();
+            horizontalScrollBar()->setValue(horizontalScrollBar()->value() - delta.x());
+            verticalScrollBar()->setValue(verticalScrollBar()->value() - delta.y());
+            event->accept();
+            return;
+        }
+        QScrollArea::mouseMoveEvent(event);
+    }
+
+    void mouseReleaseEvent(QMouseEvent* event) override
+    {
+        if (event->button() == Qt::LeftButton && m_panning) {
+            m_panning = false;
+            setCursor(Qt::OpenHandCursor);
+            event->accept();
+            return;
+        }
+        QScrollArea::mouseReleaseEvent(event);
+    }
+
+private:
+    bool m_panning = false;
+    QPoint m_last;
+};
+
+bool hasManualImageSize(const QTextImageFormat& format)
+{
+    return QUrlQuery(QUrl(format.name())).hasQueryItem(kManualImageSizeQuery);
+}
+
+QString markManualImageSize(const QString& name)
+{
+    QUrl url(name);
+    QUrlQuery query(url);
+    query.removeAllQueryItems(kManualImageSizeQuery);
+    query.addQueryItem(kManualImageSizeQuery, QStringLiteral("1"));
+    url.setQuery(query);
+    return url.toString();
+}
 }
 
 NoteEditor::NoteEditor(QWidget* parent)
     : QTextEdit(parent)
 {
+    MathSupport::initialize();
     setAcceptRichText(true);
     setAcceptDrops(true);
     setUndoRedoEnabled(true);
@@ -102,17 +195,6 @@ NoteEditor::NoteEditor(QWidget* parent)
         "li { margin-top: 6px; margin-bottom: 6px; line-height: 150%; }"));
     m_contrastHighlighter = new ContrastHighlighter(document());
     document()->documentLayout()->registerHandler(QTextFormat::ImageObject, this);
-    m_imageClickTimer = new QTimer(this);
-    m_imageClickTimer->setSingleShot(true);
-    connect(m_imageClickTimer, &QTimer::timeout, this, [this] {
-        if (isReadOnly() || m_pendingImage.isNull() || !m_pendingImage.charFormat().isImageFormat()) return;
-        bool accepted = false;
-        const QString caption = NocturneDialogs::getText(this, QStringLiteral("图片描述"),
-            QStringLiteral("显示在图片下方，可留空："), QLineEdit::Normal,
-            m_pendingImage.charFormat().stringProperty(QTextFormat::ImageAltText), &accepted);
-        if (accepted) setImageCaption(m_pendingImage.selectionStart(), caption);
-    });
-
     document()->setResourceProvider([this](const QUrl& url) -> QVariant {
         if (!url.isLocalFile())
             return {};
@@ -120,9 +202,11 @@ NoteEditor::NoteEditor(QWidget* parent)
         QImageReader reader(url.toLocalFile());
         reader.setAutoTransform(true);
         const QSize sourceSize = reader.size();
-        const int targetWidth = std::max(320, viewport()->width() - 48);
-        const QSize decodeBounds(targetWidth,
-                                 std::max(targetWidth, viewport()->height() * 2));
+        // Keep enough source pixels for the editor's persisted zoom levels.
+        // The document layout, rather than the resource provider, controls the
+        // displayed size. Stored attachments are already bounded on import.
+        constexpr int maxDecodeSide = 4096;
+        const QSize decodeBounds(maxDecodeSide, maxDecodeSide);
         if (sourceSize.isValid()
             && (sourceSize.width() > decodeBounds.width()
                 || sourceSize.height() > decodeBounds.height())) {
@@ -140,6 +224,8 @@ void NoteEditor::refreshTheme()
     colors.setColor(QPalette::Base, NocturneUi::theme().paper);
     colors.setColor(QPalette::PlaceholderText, NocturneUi::theme().muted);
     setPalette(colors);
+    MathSupport::clearCache();
+    document()->markContentsDirty(0, document()->characterCount());
     m_contrastHighlighter->rehighlight();
 }
 
@@ -196,13 +282,22 @@ void NoteEditor::insertFromMimeData(const QMimeData* source)
         }
     }
 
+    if (source->hasHtml() && source->html().contains(QStringLiteral("application/x-tex"))) {
+        auto cursor = textCursor(); cursor.beginEditBlock();
+        cursor.insertHtml(MathSupport::normalizeHtml(source->html()));
+        MathSupport::renderDelimitedMath(*document());
+        repairImageBlocks(); cursor.endEditBlock(); setTextCursor(cursor);
+        return;
+    }
     if (source->hasText() && !source->hasHtml()
         && (QRegularExpression(QStringLiteral("(?m)^(#{1,6} |```|> |[-*] |[0-9]+\\. )")).match(source->text()).hasMatch()
+            || MathSupport::protectMarkdown(source->text()) != source->text()
             || QRegularExpression(QStringLiteral("(?m)^\\s*\\|?\\s*:?-{3,}:?\\s*\\|.*$")).match(source->text()).hasMatch())) {
         insertMarkdownText(source->text());
         return;
     }
     QTextEdit::insertFromMimeData(source);
+    MathSupport::renderDelimitedMath(*document());
     repairImageBlocks();
 }
 
@@ -264,12 +359,45 @@ void NoteEditor::applyCodeBlock()
     format.setFontPointSize(11); cursor.mergeCharFormat(format);
     cursor.endEditBlock(); setTextCursor(cursor); setFocus();
 }
+
+void NoteEditor::applyAlignment(Qt::Alignment alignment)
+{
+    if (isReadOnly()) return;
+    const QTextCursor original = textCursor();
+    const int start = original.selectionStart();
+    const int end = original.hasSelection()
+        ? std::max(start, original.selectionEnd() - 1)
+        : start;
+    QTextCursor cursor(document());
+    cursor.setPosition(start);
+    cursor.beginEditBlock();
+    while (cursor.block().isValid()) {
+        QTextBlockFormat block = cursor.blockFormat();
+        block.setAlignment(alignment);
+        cursor.setBlockFormat(block);
+        if (cursor.block().position() + cursor.block().length() > end)
+            break;
+        if (!cursor.movePosition(QTextCursor::NextBlock))
+            break;
+    }
+    cursor.endEditBlock();
+    setTextCursor(original);
+    setFocus();
+}
+
+Qt::Alignment NoteEditor::currentAlignment() const
+{
+    const Qt::Alignment alignment = textCursor().blockFormat().alignment();
+    return alignment == Qt::Alignment() ? Qt::AlignLeft : alignment;
+}
 void NoteEditor::insertMarkdownText(const QString& markdown)
 {
     if (isReadOnly()) return;
     auto cursor = textCursor();
     cursor.beginEditBlock();
-    cursor.insertFragment(QTextDocumentFragment::fromMarkdown(markdown, QTextDocument::MarkdownDialectGitHub));
+    QTextDocument parsed;
+    MathSupport::setMarkdown(parsed, markdown);
+    cursor.insertFragment(QTextDocumentFragment(&parsed));
     repairImageBlocks();
     cursor.endEditBlock(); setTextCursor(cursor);
 }
@@ -294,8 +422,19 @@ QString NoteEditor::markdownForExport() const
     for (auto block = copy->begin(); block.isValid(); block = block.next()) {
         for (auto it = block.begin(); !it.atEnd(); ++it) {
             const auto fragment = it.fragment();
-            if (fragment.isValid() && (fragment.charFormat().anchorHref().startsWith(QStringLiteral("nocturne-todo:"))
-                || fragment.charFormat().anchorHref() == QStringLiteral("nocturne-caption:")))
+            if (!fragment.isValid())
+                continue;
+            if (fragment.charFormat().isImageFormat()
+                && hasManualImageSize(fragment.charFormat().toImageFormat())) {
+                QTextCursor image(copy.get()); image.setPosition(fragment.position());
+                image.setPosition(fragment.position() + fragment.length(), QTextCursor::KeepAnchor);
+                QTextImageFormat imageFormat = fragment.charFormat().toImageFormat();
+                QUrl url(imageFormat.name()); QUrlQuery query(url);
+                query.removeAllQueryItems(kManualImageSizeQuery); url.setQuery(query);
+                imageFormat.setName(url.toString()); image.setCharFormat(imageFormat);
+            }
+            if (fragment.charFormat().anchorHref().startsWith(QStringLiteral("nocturne-todo:"))
+                || fragment.charFormat().anchorHref() == QStringLiteral("nocturne-caption:"))
                 ranges.append({fragment.position(), fragment.length()});
         }
     }
@@ -305,7 +444,93 @@ QString NoteEditor::markdownForExport() const
         QTextCharFormat clear; clear.setAnchor(false); clear.setAnchorHref(QString()); clear.setFontUnderline(false);
         cursor.mergeCharFormat(clear);
     }
-    return copy->toMarkdown(QTextDocument::MarkdownDialectGitHub);
+    return MathSupport::markdown(*copy);
+}
+QString NoteEditor::toPlainText() const { return MathSupport::plainText(*document()); }
+
+QMimeData* NoteEditor::createMimeDataFromSelection() const
+{
+    auto* mime = new QMimeData;
+    mime->setHtml(textCursor().selection().toHtml());
+    QTextDocument selected;
+    selected.setHtml(textCursor().selection().toHtml());
+    mime->setText(MathSupport::plainText(selected));
+    return mime;
+}
+
+void NoteEditor::insertFormula(const QString& source, bool display)
+{
+    if (isReadOnly() || source.trimmed().isEmpty()) return;
+    auto cursor = textCursor(); cursor.beginEditBlock();
+    const bool replacing = cursor.hasSelection() && cursor.selectionEnd() - cursor.selectionStart() == 1
+        && MathSupport::isFormula(cursor.charFormat().toImageFormat().name());
+    if (replacing && MathSupport::formula(cursor.charFormat().toImageFormat().name()).display == display) {
+        QTextImageFormat image = cursor.charFormat().toImageFormat();
+        image.setName(MathSupport::imageName({source, display}));
+        image.setProperty(QTextFormat::ImageAltText, MathSupport::delimited({source, display}));
+        cursor.setCharFormat(image); cursor.endEditBlock(); setTextCursor(cursor); return;
+    }
+    if (display) {
+        cursor.removeSelectedText();
+        if (!cursor.atBlockStart()) cursor.insertBlock();
+        auto format = cursor.blockFormat(); format.setAlignment(Qt::AlignHCenter);
+        format.setLineHeight(0, QTextBlockFormat::SingleHeight); cursor.setBlockFormat(format);
+    }
+    QTextImageFormat image;
+    image.setName(MathSupport::imageName({source, display}));
+    image.setProperty(QTextFormat::ImageAltText, MathSupport::delimited({source, display}));
+    image.setVerticalAlignment(QTextCharFormat::AlignMiddle);
+    cursor.insertImage(image);
+    cursor.setCharFormat(QTextCharFormat());
+    if (display) {
+        cursor.insertBlock(); auto format = cursor.blockFormat(); format.setAlignment(Qt::AlignLeft);
+        cursor.setBlockFormat(format);
+    }
+    cursor.endEditBlock(); setTextCursor(cursor); setFocus();
+}
+
+void NoteEditor::showFormulaDialog()
+{
+    if (isReadOnly()) return;
+    const auto selection = textCursor();
+    const auto image = selection.charFormat().toImageFormat();
+    const bool editing = selection.hasSelection() && selection.selectionEnd() - selection.selectionStart() == 1
+        && MathSupport::isFormula(image.name());
+    auto value = editing ? MathSupport::formula(image.name())
+        : MathSupport::Formula{selection.selectedText().replace(QChar::ParagraphSeparator, '\n'), false};
+    if (value.source.startsWith("$$") && value.source.endsWith("$$") && value.source.size() > 4) {
+        value.source = value.source.mid(2, value.source.size() - 4).trimmed(); value.display = true;
+    } else if (value.source.startsWith('$') && value.source.endsWith('$') && value.source.size() > 2)
+        value.source = value.source.mid(1, value.source.size() - 2);
+    NocturneDialog dialog(this); dialog.setObjectName(QStringLiteral("formulaDialog"));
+    dialog.setWindowTitle(editing ? QStringLiteral("编辑公式 · 夜航") : QStringLiteral("插入公式 · 夜航"));
+    dialog.resize(580, 400);
+    auto* layout = new QVBoxLayout(dialog.body()); layout->setContentsMargins(24, 20, 24, 20);
+    layout->addWidget(new QLabel(QStringLiteral("LaTeX 公式源码"), dialog.body()));
+    auto* source = new QPlainTextEdit(dialog.body()); source->setObjectName(QStringLiteral("formulaSource"));
+    source->setPlaceholderText(QStringLiteral("例如：\\varphi_i=\\frac{\\pi\\theta_i}{180}"));
+    source->setPlainText(value.source); layout->addWidget(source);
+    auto* block = new QCheckBox(QStringLiteral("独立公式块"), dialog.body()); block->setChecked(value.display); layout->addWidget(block);
+    auto* preview = new QLabel(dialog.body()); preview->setAlignment(Qt::AlignCenter); preview->setMinimumHeight(65);
+    layout->addWidget(preview);
+    auto* error = new QLabel(dialog.body()); error->setWordWrap(true); layout->addWidget(error);
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, dialog.body());
+    buttons->button(QDialogButtonBox::Ok)->setText(editing ? QStringLiteral("保存公式") : QStringLiteral("插入"));
+    buttons->button(QDialogButtonBox::Cancel)->setText(QStringLiteral("取消")); layout->addWidget(buttons);
+    auto update = [&] {
+        const auto rendered = MathSupport::render({source->toPlainText(), block->isChecked()}, NocturneUi::theme().text);
+        const auto scaled = rendered.image.scaled(1000, 220, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+        preview->setPixmap(QPixmap::fromImage(scaled)); error->setText(rendered.error);
+        buttons->button(QDialogButtonBox::Ok)->setEnabled(!source->toPlainText().trimmed().isEmpty() && rendered.error.isEmpty());
+    };
+    QTimer timer; timer.setSingleShot(true); timer.setInterval(180);
+    connect(source, &QPlainTextEdit::textChanged, &timer, [&] { timer.start(); });
+    connect(block, &QCheckBox::toggled, &timer, [&] { timer.start(); });
+    connect(&timer, &QTimer::timeout, &dialog, update);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    update();
+    if (dialog.exec() == QDialog::Accepted) { setTextCursor(selection); insertFormula(source->toPlainText(), block->isChecked()); }
 }
 void NoteEditor::setTodoStates(const QHash<QString, bool>& states)
 {
@@ -343,9 +568,19 @@ void NoteEditor::clearSelectionTodo()
 }
 void NoteEditor::contextMenuEvent(QContextMenuEvent* event)
 {
+    const int hitFormula = formulaAt(event->pos());
+    if (hitFormula >= 0) setTextCursor(imageCursor(hitFormula));
+    const int hitImage = imageAt(event->pos());
+    if (hitImage >= 0)
+        setTextCursor(imageCursor(hitImage));
     QMenu* menu = createStandardContextMenu();
+    auto* capture = menu->addAction(QStringLiteral("选段生成便签"),this,&NoteEditor::captureRequested);
+    capture->setObjectName(QStringLiteral("captureSelectionAction"));capture->setEnabled(textCursor().hasSelection());
     if (!isReadOnly()) {
         menu->addSeparator();
+        auto* formula = menu->addAction(hitFormula >= 0 ? QStringLiteral("编辑公式…")
+            : textCursor().hasSelection() ? QStringLiteral("选区作为 LaTeX 公式…") : QStringLiteral("插入公式…"), this, &NoteEditor::showFormulaDialog);
+        formula->setObjectName(QStringLiteral("formulaAction"));
         auto* todo = menu->addAction(QStringLiteral("设置待办"));
         todo->setObjectName(QStringLiteral("selectionTodoAction"));
         todo->setEnabled(textCursor().hasSelection() && !textCursor().selectedText().trimmed().isEmpty());
@@ -360,6 +595,19 @@ void NoteEditor::contextMenuEvent(QContextMenuEvent* event)
         menu->addAction(QStringLiteral("插入表格…"), this, &NoteEditor::showTableDialog);
         auto* convert = menu->addAction(QStringLiteral("选区转为表格"), this, &NoteEditor::showSelectionToTable);
         convert->setEnabled(textCursor().hasSelection() || textCursor().currentTable());
+        auto* alignment = menu->addMenu(QStringLiteral("段落对齐"));
+        alignment->addAction(QStringLiteral("靠左"), this, [this] { applyAlignment(Qt::AlignLeft); });
+        alignment->addAction(QStringLiteral("居中"), this, [this] { applyAlignment(Qt::AlignHCenter); });
+        alignment->addAction(QStringLiteral("靠右"), this, [this] { applyAlignment(Qt::AlignRight); });
+        if (hasImageAtCursor()) {
+            menu->addSeparator();
+            auto* caption = menu->addAction(QStringLiteral("编辑图片描述…"), this, &NoteEditor::editCurrentImageCaption);
+            caption->setObjectName(QStringLiteral("imageCaptionAction"));
+            auto* imageSize = menu->addMenu(QStringLiteral("图片大小"));
+            imageSize->addAction(QStringLiteral("缩小图片"), this, [this] { scaleCurrentImage(0.8); });
+            imageSize->addAction(QStringLiteral("放大图片"), this, [this] { scaleCurrentImage(1.25); });
+            imageSize->addAction(QStringLiteral("调整图片大小…"), this, &NoteEditor::showImageSizeDialog);
+        }
         if (auto* table = textCursor().currentTable()) {
             const auto cell = table->cellAt(textCursor());
             menu->addAction(QStringLiteral("在下方添加行"), this, [table, cell] { table->insertRows(cell.row() + 1, 1); });
@@ -373,12 +621,31 @@ void NoteEditor::contextMenuEvent(QContextMenuEvent* event)
 
 void NoteEditor::mousePressEvent(QMouseEvent* event)
 {
-    m_imageClickTimer->stop();
     m_pressedTodo.clear();
     m_pressedImage = -1;
     if (event->button() == Qt::LeftButton && event->modifiers() == Qt::NoModifier) {
-        m_pressedImage = imageAt(event->position().toPoint());
+        const QPoint point = event->position().toPoint();
+        m_pressedImage = imageAt(point);
         m_linkPressPosition = event->position().toPoint();
+        if (!isReadOnly() && m_pressedImage >= 0) {
+            const int handle = imageResizeHandleAt(point);
+            if (handle) {
+                const QTextCursor image = imageCursor(m_pressedImage);
+                m_resizingImage = true;
+                m_resizeHandle = handle;
+                m_resizeStart = point;
+                m_resizeStartWidth = image.charFormat().toImageFormat().width();
+                if (m_resizeStartWidth <= 0)
+                    m_resizeStartWidth = imageRectAtPosition(m_pressedImage).width();
+                m_resizeCursor = image;
+                m_resizeCursor.beginEditBlock();
+                setTextCursor(image);
+                viewport()->setCursor((handle & 3) && (handle & 12)
+                    ? Qt::SizeFDiagCursor : (handle & 3) ? Qt::SizeHorCursor : Qt::SizeVerCursor);
+                event->accept();
+                return;
+            }
+        }
         const QString href = anchorAt(event->position().toPoint());
         if (href.startsWith(QStringLiteral("nocturne-todo:"))
             && static_cast<ContrastHighlighter*>(m_contrastHighlighter)->todoStates.contains(href.mid(14))) {
@@ -391,18 +658,25 @@ void NoteEditor::mousePressEvent(QMouseEvent* event)
 
 void NoteEditor::mouseReleaseEvent(QMouseEvent* event)
 {
+    if (m_resizingImage && event->button() == Qt::LeftButton) {
+        m_resizingImage = false;
+        if (!m_resizeCursor.isNull()) m_resizeCursor.endEditBlock();
+        m_resizeCursor = QTextCursor(); m_resizeHandle = 0; m_pressedImage = -1;
+        viewport()->setCursor(Qt::IBeamCursor);
+        event->accept();
+        return;
+    }
     QTextEdit::mouseReleaseEvent(event);
     const QString pressed = m_pressedTodo;
     m_pressedTodo.clear();
-    const int pressedImage = m_pressedImage;
+        const int pressedImage = m_pressedImage;
     m_pressedImage = -1;
     if (!isReadOnly() && event->button() == Qt::LeftButton && pressedImage >= 0
         && !textCursor().hasSelection()
         && (event->position().toPoint() - m_linkPressPosition).manhattanLength() < QApplication::startDragDistance()
         && imageAt(event->position().toPoint()) == pressedImage) {
         QTextCursor cursor(document()); cursor.setPosition(pressedImage); cursor.movePosition(QTextCursor::NextCharacter, QTextCursor::KeepAnchor);
-        m_pendingImage = cursor;
-        m_imageClickTimer->start(QApplication::doubleClickInterval());
+        setTextCursor(cursor);
         return;
     }
     if (event->button() == Qt::LeftButton && !pressed.isEmpty() && !textCursor().hasSelection()
@@ -413,14 +687,36 @@ void NoteEditor::mouseReleaseEvent(QMouseEvent* event)
 
 void NoteEditor::mouseMoveEvent(QMouseEvent* event)
 {
+    if (m_resizingImage) {
+        const QTextCursor image = imageCursor(m_pressedImage);
+        if (!image.isNull() && image.charFormat().isImageFormat()) {
+            const QImage source = imageResource(image.charFormat());
+            const qreal ratio = source.isNull()
+                ? (image.charFormat().toImageFormat().height() > 0
+                    ? image.charFormat().toImageFormat().height() / image.charFormat().toImageFormat().width() : 1.0)
+                : static_cast<qreal>(source.height()) / source.width();
+            const QPoint delta = event->position().toPoint() - m_resizeStart;
+            qreal width = m_resizeStartWidth;
+            if (m_resizeHandle & 2) width += delta.x();
+            else if (m_resizeHandle & 1) width -= delta.x();
+            else if (m_resizeHandle & 8) width += delta.y() / ratio;
+            else if (m_resizeHandle & 4) width -= delta.y() / ratio;
+            setCurrentImageWidth(width);
+        }
+        event->accept();
+        return;
+    }
     QTextEdit::mouseMoveEvent(event);
     if (event->buttons() != Qt::NoButton) return;
     const QString href = anchorAt(event->position().toPoint());
     const bool active = href.startsWith(QStringLiteral("nocturne-todo:"))
         && static_cast<ContrastHighlighter*>(m_contrastHighlighter)->todoStates.contains(href.mid(14));
+    const int resizeHandle = imageResizeHandleAt(event->position().toPoint());
     const bool image = imageAt(event->position().toPoint()) >= 0;
-    viewport()->setCursor(active || image ? Qt::PointingHandCursor : Qt::IBeamCursor);
-    viewport()->setToolTip(image ? QStringLiteral("单击编辑描述 · 双击放大查看") : active ? QStringLiteral("点击查看待办明细；拖动可选中文字") : QString());
+    const Qt::CursorShape resizeCursor = (resizeHandle & 3) && (resizeHandle & 12)
+        ? Qt::SizeFDiagCursor : (resizeHandle & 3) ? Qt::SizeHorCursor : Qt::SizeVerCursor;
+    viewport()->setCursor(resizeHandle ? resizeCursor : active || image ? Qt::PointingHandCursor : Qt::IBeamCursor);
+    viewport()->setToolTip(image ? QStringLiteral("单击选中 · 右键编辑描述 · 双击预览") : active ? QStringLiteral("点击查看待办明细；拖动可选中文字") : QString());
 }
 void NoteEditor::keyPressEvent(QKeyEvent* event)
 {
@@ -474,6 +770,8 @@ void NoteEditor::keyPressEvent(QKeyEvent* event)
         return;
     }
     QTextEdit::keyPressEvent(event);
+    if (!isReadOnly() && !event->text().isEmpty() && QStringLiteral("$)]").contains(event->text()))
+        MathSupport::renderDelimitedMath(*document());
     if (isReadOnly() || !QStringLiteral("*_`~").contains(event->text()) || event->text().isEmpty()) return;
     auto cursor = textCursor();
     const QString before = cursor.block().text().left(cursor.positionInBlock());
@@ -502,7 +800,15 @@ void NoteEditor::keyPressEvent(QKeyEvent* event)
 
 QImage NoteEditor::imageResource(const QTextFormat& format) const
 {
-    const auto value = document()->resource(QTextDocument::ImageResource, QUrl(format.toImageFormat().name()));
+    if (MathSupport::isFormula(format.toImageFormat().name()))
+        return MathSupport::render(MathSupport::formula(format.toImageFormat().name()), NocturneUi::theme().text).image;
+    const QUrl imageUrl(format.toImageFormat().name());
+    QVariant value = document()->resource(QTextDocument::ImageResource, imageUrl);
+    if (!value.isValid() && imageUrl.isLocalFile() && !imageUrl.query().isEmpty()) {
+        QUrl plainUrl = imageUrl;
+        plainUrl.setQuery(QString());
+        value = document()->resource(QTextDocument::ImageResource, plainUrl);
+    }
     if (value.canConvert<QImage>()) return qvariant_cast<QImage>(value);
     if (value.canConvert<QPixmap>()) return qvariant_cast<QPixmap>(value).toImage();
     return {};
@@ -512,9 +818,22 @@ QSizeF NoteEditor::intrinsicSize(QTextDocument*, int, const QTextFormat& format)
     const QImage image = imageResource(format);
     if (image.isNull()) return QSizeF(48, 32);
     const auto img = format.toImageFormat();
-    const qreal available = std::max(40, viewport()->width() - 24);
-    const qreal width = std::min(available, img.width() > 0 ? img.width() : qreal(image.width()));
-    return QSizeF(width, width * image.height() / image.width());
+    if (MathSupport::isFormula(img.name())) {
+        QSizeF size = image.deviceIndependentSize();
+        const qreal width = std::max(60, viewport()->width() - 24);
+        if (size.width() > width) size *= width / size.width();
+        return size;
+    }
+    const qreal available = std::max<qreal>(240, viewport()->width() - 24);
+    const qreal naturalWidth = img.width() > 0 ? img.width() : qreal(image.width());
+    const bool manualSize = hasManualImageSize(img);
+    const qreal width = img.width() > 0
+        ? (manualSize ? img.width() : std::min(available, img.width()))
+        : std::min(available, naturalWidth);
+    const qreal height = manualSize && img.height() > 0
+        ? img.height()
+        : width * image.height() / image.width();
+    return QSizeF(std::max<qreal>(40, width), std::max<qreal>(1, height));
 }
 void NoteEditor::drawObject(QPainter* painter, const QRectF& rect, QTextDocument*, int, const QTextFormat& format)
 {
@@ -532,8 +851,8 @@ void NoteEditor::resizeEvent(QResizeEvent* event)
 }
 void NoteEditor::setHtml(const QString& html)
 {
-    m_imageClickTimer->stop(); m_pendingImage = QTextCursor();
-    QTextEdit::setHtml(html);
+    QTextEdit::setHtml(MathSupport::normalizeHtml(html));
+    MathSupport::renderDelimitedMath(*document());
     repairImageBlocks();
     document()->clearUndoRedoStacks();
     document()->setModified(false);
@@ -559,16 +878,181 @@ int NoteEditor::imageAt(const QPoint& point) const
     const auto cursor = cursorForPosition(point);
     for (const int position : {cursor.position(), cursor.position() - 1}) {
         if (position < 0 || position >= document()->characterCount() - 1) continue;
-        QTextCursor image(document()); image.setPosition(position); image.movePosition(QTextCursor::NextCharacter, QTextCursor::KeepAnchor);
-        if (!image.charFormat().isImageFormat()) continue;
-        QTextCursor start(document()); start.setPosition(position);
-        const auto size = const_cast<NoteEditor*>(this)->intrinsicSize(document(), position, image.charFormat());
-        const auto caret = cursorRect(start);
-        const QRectF bounds(caret.left(), caret.bottom() - size.height(), size.width(), size.height());
-        if (bounds.adjusted(-2, -2, 2, 2).contains(point)) return position;
+        if (!MathSupport::isFormula(imageCursor(position).charFormat().toImageFormat().name())
+            && imageRectAtPosition(position).adjusted(-2, -2, 2, 2).contains(point)) return position;
     }
     return -1;
 }
+int NoteEditor::formulaAt(const QPoint& point) const
+{
+    const auto cursor = cursorForPosition(point);
+    for (int position : {cursor.position(), cursor.position() - 1}) {
+        if (position < 0 || position >= document()->characterCount() - 1) continue;
+        if (MathSupport::isFormula(imageCursor(position).charFormat().toImageFormat().name())
+            && imageRectAtPosition(position).adjusted(-2, -2, 2, 2).contains(point)) return position;
+    }
+    return -1;
+}
+
+QRectF NoteEditor::imageRectAtPosition(int position) const
+{
+    const QTextCursor image = imageCursor(position);
+    if (image.isNull() || !image.charFormat().isImageFormat()) return {};
+    const QSizeF size = const_cast<NoteEditor*>(this)->intrinsicSize(document(), position, image.charFormat());
+    QTextCursor start(document()); start.setPosition(position);
+    const QRect caret = cursorRect(start);
+    return QRectF(caret.left(), caret.bottom() - size.height(), size.width(), size.height());
+}
+
+int NoteEditor::imageResizeHandleAt(const QPoint& point) const
+{
+    const int position = imageAt(point);
+    if (position < 0) return 0;
+    const QRectF rect = imageRectAtPosition(position);
+    constexpr qreal edge = 12;
+    int handle = 0;
+    if (qAbs(point.x() - rect.left()) <= edge) handle |= 1;
+    if (qAbs(point.x() - rect.right()) <= edge) handle |= 2;
+    if (qAbs(point.y() - rect.top()) <= edge) handle |= 4;
+    if (qAbs(point.y() - rect.bottom()) <= edge) handle |= 8;
+    return handle;
+}
+
+QTextCursor NoteEditor::imageCursor(int position) const
+{
+    QTextCursor cursor(document());
+    if (position < 0 || position >= document()->characterCount() - 1)
+        return cursor;
+    cursor.setPosition(position);
+    cursor.movePosition(QTextCursor::NextCharacter, QTextCursor::KeepAnchor);
+    if (!cursor.charFormat().isImageFormat())
+        cursor.clearSelection();
+    return cursor;
+}
+
+int NoteEditor::imagePositionAtCursor() const
+{
+    const QTextCursor cursor = textCursor();
+    if (cursor.hasSelection() && cursor.selectionEnd() == cursor.selectionStart() + 1
+        && cursor.charFormat().isImageFormat() && !MathSupport::isFormula(cursor.charFormat().toImageFormat().name()))
+        return cursor.selectionStart();
+    for (const int position : {cursor.position(), cursor.position() - 1}) {
+        const QTextCursor image = imageCursor(position);
+        if (!image.isNull() && image.charFormat().isImageFormat() && !MathSupport::isFormula(image.charFormat().toImageFormat().name()))
+            return position;
+    }
+    return -1;
+}
+
+qreal NoteEditor::defaultImageWidth(const QTextImageFormat& format) const
+{
+    const QImage image = imageResource(format);
+    if (image.isNull())
+        return std::max<qreal>(240, viewport()->width() - 24);
+    const qreal available = std::max<qreal>(240, viewport()->width() - 24);
+    return std::max<qreal>(40, std::min<qreal>(available, image.width()));
+}
+
+bool NoteEditor::hasImageAtCursor() const
+{
+    return imagePositionAtCursor() >= 0;
+}
+
+QRectF NoteEditor::currentImageRect() const
+{
+    return imageRectAtPosition(imagePositionAtCursor());
+}
+
+int NoteEditor::currentImageScalePercent() const
+{
+    const QTextCursor image = imageCursor(imagePositionAtCursor());
+    if (!image.isNull() && image.charFormat().isImageFormat()) {
+        const QTextImageFormat format = image.charFormat().toImageFormat();
+        const qreal width = format.width() > 0 ? format.width() : defaultImageWidth(format);
+        return qBound(10, qRound(width * 100.0 / defaultImageWidth(format)), 200);
+    }
+    return 100;
+}
+
+bool NoteEditor::setCurrentImageScale(int percent)
+{
+    percent = qBound(10, percent, 200);
+    QTextCursor image = imageCursor(imagePositionAtCursor());
+    if (image.isNull() || !image.charFormat().isImageFormat()) return false;
+    return setCurrentImageWidth(defaultImageWidth(image.charFormat().toImageFormat()) * percent / 100.0);
+}
+
+bool NoteEditor::setCurrentImageWidth(qreal width)
+{
+    if (isReadOnly()) return false;
+    QTextCursor image = imageCursor(imagePositionAtCursor());
+    if (image.isNull() || !image.charFormat().isImageFormat()) return false;
+    QTextImageFormat format = image.charFormat().toImageFormat();
+    const qreal baseWidth = defaultImageWidth(format);
+    width = qBound(baseWidth * 0.1, width, baseWidth * 2.0);
+    const QImage source = imageResource(format);
+    const qreal ratio = source.isNull()
+        ? (format.width() > 0 && format.height() > 0 ? format.height() / format.width() : 1.0)
+        : static_cast<qreal>(source.height()) / source.width();
+    format.setWidth(width);
+    format.setHeight(std::max<qreal>(1, width * ratio));
+    format.setName(markManualImageSize(format.name()));
+    image.setCharFormat(format);
+    setTextCursor(image);
+    ensureCursorVisible();
+    setFocus();
+    return true;
+}
+
+bool NoteEditor::scaleCurrentImage(qreal factor)
+{
+    if (!hasImageAtCursor()) return false;
+    return setCurrentImageScale(qRound(currentImageScalePercent() * factor));
+}
+
+void NoteEditor::editCurrentImageCaption()
+{
+    if (isReadOnly()) return;
+    const QTextCursor image = imageCursor(imagePositionAtCursor());
+    if (image.isNull() || !image.charFormat().isImageFormat()) return;
+    bool accepted = false;
+    const QString caption = NocturneDialogs::getText(
+        this, QStringLiteral("图片描述"), QStringLiteral("显示在图片下方，可留空："),
+        QLineEdit::Normal, image.charFormat().stringProperty(QTextFormat::ImageAltText), &accepted);
+    if (accepted)
+        setImageCaption(image.selectionStart(), caption);
+}
+
+void NoteEditor::showImageSizeDialog()
+{
+    if (!hasImageAtCursor()) {
+        NocturneDialogs::information(this, QStringLiteral("调整图片大小"),
+            QStringLiteral("请先点击正文中的图片，再调整它在正文中的显示比例。"));
+        return;
+    }
+    NocturneDialog dialog(this);
+    dialog.setWindowTitle(QStringLiteral("调整图片大小 · 夜航"));
+    dialog.resize(440, 230);
+    auto* layout = new QVBoxLayout(dialog.body());
+    layout->setContentsMargins(26, 22, 26, 22);
+    layout->addWidget(new QLabel(QStringLiteral("图片尺寸只改变正文中的显示大小，不会修改原始附件。"), dialog.body()));
+    auto* form = new QFormLayout;
+    auto* percent = new QSpinBox(dialog.body());
+    percent->setRange(10, 200);
+    percent->setSuffix(QStringLiteral("%"));
+    percent->setValue(currentImageScalePercent());
+    form->addRow(QStringLiteral("默认正文宽度"), percent);
+    layout->addLayout(form);
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, dialog.body());
+    buttons->button(QDialogButtonBox::Ok)->setText(QStringLiteral("应用"));
+    buttons->button(QDialogButtonBox::Cancel)->setText(QStringLiteral("取消"));
+    layout->addWidget(buttons);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    if (dialog.exec() == QDialog::Accepted)
+        setCurrentImageScale(percent->value());
+}
+
 void NoteEditor::setImageCaption(int position, const QString& caption)
 {
     if (isReadOnly() || position < 0) return;
@@ -634,9 +1118,13 @@ void NoteEditor::showTableDialog()
 
 void NoteEditor::mouseDoubleClickEvent(QMouseEvent* event)
 {
+    const int mathPosition = formulaAt(event->position().toPoint());
+    if (mathPosition >= 0 && !isReadOnly()) {
+        setTextCursor(imageCursor(mathPosition)); showFormulaDialog(); event->accept(); return;
+    }
     const int position = imageAt(event->position().toPoint());
     if (event->button() != Qt::LeftButton || position < 0) { QTextEdit::mouseDoubleClickEvent(event); return; }
-    m_imageClickTimer->stop(); m_pressedImage = -1;
+    m_pressedImage = -1;
     QTextCursor cursor(document()); cursor.setPosition(position); cursor.movePosition(QTextCursor::NextCharacter, QTextCursor::KeepAnchor);
     const auto format = cursor.charFormat();
     QImage full;
@@ -644,7 +1132,8 @@ void NoteEditor::mouseDoubleClickEvent(QMouseEvent* event)
     if (url.isLocalFile()) { QImageReader reader(url.toLocalFile()); reader.setAutoTransform(true); full = reader.read(); }
     if (full.isNull()) full = imageResource(format);
     if (full.isNull()) return;
-    NocturneDialog dialog(this); dialog.setWindowTitle(QStringLiteral("图片预览")); dialog.resize(960, 700);
+    NocturneDialog dialog(this); dialog.setWindowTitle(QStringLiteral("图片预览"));
+    dialog.setMinimumSize(560, 380); dialog.resize(960, 700);
     auto* layout = new QVBoxLayout(dialog.body());
     auto* controls = new QHBoxLayout;
     auto* fit = new QPushButton(QStringLiteral("适应窗口"), &dialog);
@@ -653,18 +1142,37 @@ void NoteEditor::mouseDoubleClickEvent(QMouseEvent* event)
     auto* plus = new QPushButton(QStringLiteral("放大 +"), &dialog);
     controls->addWidget(fit); controls->addWidget(actual); controls->addWidget(minus); controls->addWidget(plus); controls->addStretch();
     layout->addLayout(controls);
-    auto* scroll = new QScrollArea(&dialog); scroll->setAlignment(Qt::AlignCenter);
+    auto* scroll = new ImagePreviewArea(&dialog); scroll->setWidgetResizable(false);
     auto* image = new QLabel; image->setAlignment(Qt::AlignCenter); scroll->setWidget(image); layout->addWidget(scroll, 1);
     auto* description = new QLabel(format.stringProperty(QTextFormat::ImageAltText), &dialog);
     description->setTextFormat(Qt::PlainText); description->setWordWrap(true); description->setAlignment(Qt::AlignCenter);
     layout->addWidget(description); description->setVisible(!description->text().isEmpty());
     qreal zoom = 1;
-    auto render = [&] { const auto size = full.size() * zoom; image->setPixmap(QPixmap::fromImage(full.scaled(size, Qt::KeepAspectRatio, Qt::SmoothTransformation))); image->resize(size); };
-    auto fitImage = [&] { zoom = std::min(1.0, std::min(qreal(std::max(40, scroll->viewport()->width() - 16)) / full.width(), qreal(std::max(40, scroll->viewport()->height() - 16)) / full.height())); render(); };
+    auto render = [&] {
+        const QSize size = full.size() * zoom;
+        image->setPixmap(QPixmap::fromImage(full.scaled(size, Qt::KeepAspectRatio, Qt::SmoothTransformation)));
+        image->resize(size);
+    };
+    auto zoomAt = [&](qreal factor, const QPoint& point) {
+        const qreal oldZoom = zoom;
+        const QPointF imagePoint((scroll->horizontalScrollBar()->value() + point.x()) / oldZoom,
+                                 (scroll->verticalScrollBar()->value() + point.y()) / oldZoom);
+        zoom = qBound(0.02, zoom * factor, 4.0);
+        render();
+        scroll->horizontalScrollBar()->setValue(qRound(imagePoint.x() * zoom - point.x()));
+        scroll->verticalScrollBar()->setValue(qRound(imagePoint.y() * zoom - point.y()));
+    };
+    scroll->zoomRequested = zoomAt;
+    auto fitImage = [&] {
+        zoom = std::min(1.0, std::min(qreal(std::max(40, scroll->viewport()->width() - 16)) / full.width(),
+                                      qreal(std::max(40, scroll->viewport()->height() - 16)) / full.height()));
+        render();
+        scroll->horizontalScrollBar()->setValue(0); scroll->verticalScrollBar()->setValue(0);
+    };
     connect(fit, &QPushButton::clicked, &dialog, fitImage);
     connect(actual, &QPushButton::clicked, &dialog, [&] { zoom = 1; render(); });
-    connect(minus, &QPushButton::clicked, &dialog, [&] { zoom = std::max(0.02, zoom / 1.25); render(); });
-    connect(plus, &QPushButton::clicked, &dialog, [&] { zoom = std::min(2.0, zoom * 1.25); render(); });
+    connect(minus, &QPushButton::clicked, &dialog, [&] { zoomAt(1.0 / 1.25, scroll->viewport()->rect().center()); });
+    connect(plus, &QPushButton::clicked, &dialog, [&] { zoomAt(1.25, scroll->viewport()->rect().center()); });
     QTimer::singleShot(0, &dialog, fitImage);
     dialog.exec(); event->accept();
 }

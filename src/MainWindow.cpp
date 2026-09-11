@@ -5,6 +5,13 @@
 #include "Database.h"
 #include "GlobalHotkey.h"
 #include "NoteEditor.h"
+#include "FolderComboBox.h"
+#include "DocumentOutline.h"
+#include "WorkspaceStore.h"
+#include "FindBar.h"
+#include "MathSupport.h"
+#include <QPlainTextEdit>
+#include <QScrollBar>
 #include "NotebookTree.h"
 #include "DocumentImporter.h"
 #include "NocturneStyle.h"
@@ -51,6 +58,7 @@
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QScrollBar>
+#include <QSaveFile>
 #include <QShortcut>
 #include <QStackedWidget>
 #include <QProgressBar>
@@ -91,17 +99,7 @@ constexpr int kNoteCacheMaxKiB = 24 * 1024;
 
 QHash<qint64, QString> folderPaths(const QList<FolderRecord>& folders)
 {
-    QHash<qint64, FolderRecord> records;
-    for (const auto& folder : folders) records.insert(folder.id, folder);
-    QHash<qint64, QString> paths;
-    for (const auto& folder : folders) {
-        QStringList parts; QSet<qint64> visited;
-        for (qint64 id = folder.id; id > 0 && records.contains(id) && !visited.contains(id); id = records.value(id).parentId) {
-            visited.insert(id); parts.prepend(records.value(id).name);
-        }
-        paths.insert(folder.id, parts.join(QStringLiteral(" / ")));
-    }
-    return paths;
+    return FolderComboBox::folderPaths(folders);
 }
 
 QString noteListText(const QString& title,
@@ -153,6 +151,7 @@ MainWindow::MainWindow(Database* database, QWidget* parent)
     setMinimumSize(920, 600);
 
     buildUi();
+    buildWorkspaceUi();
     buildMenus();
     applyTheme();
     connectSignals();
@@ -195,6 +194,8 @@ MainWindow::MainWindow(Database* database, QWidget* parent)
 
 MainWindow::~MainWindow()
 {
+    if(m_sourceRefresh){m_sourceRefresh->requestInterruption();m_sourceRefresh->wait();}
+    rememberReadingPosition();
     saveCurrentNote(true);
     for (StickyNoteWindow* window : m_stickyWindows) {
         if (window)
@@ -361,7 +362,7 @@ void MainWindow::buildUi()
     nav->addWidget(m_searchEdit);
     auto* filterRow = new QHBoxLayout;
     filterRow->setSpacing(4);
-    m_folderFilter = new NocturneComboBox(m_navigation);
+    m_folderFilter = new FolderComboBox(m_navigation);
     m_folderFilter->setObjectName(QStringLiteral("folderFilter"));
     m_folderFilter->setAccessibleName(QStringLiteral("按分组筛选笔记"));
     m_folderFilter->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
@@ -410,7 +411,7 @@ void MainWindow::buildUi()
     auto* headerRow = new QHBoxLayout(documentHeader);
     headerRow->setContentsMargins(22, 0, 22, 0);
     headerRow->setSpacing(8);
-    m_noteFolderCombo = new NocturneComboBox(documentHeader);
+    m_noteFolderCombo = new FolderComboBox(documentHeader);
     m_noteFolderCombo->setObjectName(QStringLiteral("noteFolderCombo"));
     m_noteFolderCombo->setToolTip(QStringLiteral("把当前笔记移动到分组"));
     m_noteFolderCombo->setFixedWidth(145);
@@ -419,6 +420,19 @@ void MainWindow::buildUi()
     breadcrumb->setObjectName(QStringLiteral("mutedLabel"));
     headerRow->addWidget(breadcrumb);
     headerRow->addStretch();
+    m_outlineButton = new QToolButton(documentHeader);
+    m_outlineButton->setObjectName(QStringLiteral("outlineButton"));
+    m_outlineButton->setText(QStringLiteral("大纲")); m_outlineButton->setCheckable(true);
+    m_outlineButton->setToolTip(QStringLiteral("按标题跳转 · Ctrl+Shift+O"));
+    m_outlineButton->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+O")));
+    headerRow->addWidget(m_outlineButton);
+    m_outlineRequested = QSettings().value(QStringLiteral("navigation/showOutline"), false).toBool();
+    connect(m_outlineButton, &QToolButton::clicked, this, [this](bool checked) {
+        m_outlineRequested = checked;
+        QSettings().setValue(QStringLiteral("navigation/showOutline"), checked);
+        if (checked) m_outline->rebuild();
+        updateAdaptiveLayout();
+    });
     m_openStickyButton = new QToolButton(documentHeader);
     m_openStickyButton->setObjectName(QStringLiteral("openStickyButton"));
     m_openStickyButton->setText(QStringLiteral("编辑便签"));
@@ -502,6 +516,28 @@ void MainWindow::buildUi()
     auto* colorButton = tool("A", "colorButton", QStringLiteral("文字颜色"));
     auto* imageButton = tool("", "imageButton", QStringLiteral("插入图片 · 可直接拖入或粘贴"));
     setGlyph(imageButton, Glyph::Image);
+    auto* imageTools = tool(QStringLiteral("图像"), "imageToolsButton", QStringLiteral("图片缩放与排版"));
+    imageTools->setFixedWidth(48);
+    m_imageToolsButton = imageTools;
+    auto* imageMenu = new QMenu(imageTools);
+    imageMenu->addAction(QStringLiteral("缩小图片"), this, [this] {
+        if (!m_editor->scaleCurrentImage(0.8))
+            setStatusMessage(QStringLiteral("请先点击正文中的图片"), true);
+    });
+    imageMenu->addAction(QStringLiteral("放大图片"), this, [this] {
+        if (!m_editor->scaleCurrentImage(1.25))
+            setStatusMessage(QStringLiteral("请先点击正文中的图片"), true);
+    });
+    imageMenu->addAction(QStringLiteral("调整图片大小…"), this, [this] { m_editor->showImageSizeDialog(); });
+    imageMenu->addSeparator();
+    imageMenu->addAction(QStringLiteral("图片靠左"), this, [this] { m_editor->applyAlignment(Qt::AlignLeft); });
+    imageMenu->addAction(QStringLiteral("图片居中"), this, [this] { m_editor->applyAlignment(Qt::AlignHCenter); });
+    imageMenu->addAction(QStringLiteral("图片靠右"), this, [this] { m_editor->applyAlignment(Qt::AlignRight); });
+    imageTools->setMenu(imageMenu);
+    imageTools->setPopupMode(QToolButton::InstantPopup);
+    m_alignLeftButton = tool(QStringLiteral("左"), "alignLeftButton", QStringLiteral("靠左对齐"), true);
+    m_alignCenterButton = tool(QStringLiteral("中"), "alignCenterButton", QStringLiteral("居中对齐"), true);
+    m_alignRightButton = tool(QStringLiteral("右"), "alignRightButton", QStringLiteral("靠右对齐"), true);
     auto* moreFormat = tool("", "moreFormatButton", QStringLiteral("待办、引用、代码、链接与 Markdown"));
     setGlyph(moreFormat, Glyph::More);
     auto* moreMenu = new QMenu(moreFormat);
@@ -529,6 +565,10 @@ void MainWindow::buildUi()
         m_editor->setTextCursor(cursor);
     });
     moreMenu->addAction(QStringLiteral("按 Markdown 插入…"), this, &MainWindow::insertMarkdown);
+    auto* formulaAction = moreMenu->addAction(QStringLiteral("插入 LaTeX 公式…"), this, [this] { m_editor->showFormulaDialog(); });
+    formulaAction->setObjectName(QStringLiteral("insertFormulaAction"));
+    auto* formulaButton = tool(QStringLiteral("∑"), "formulaButton", QStringLiteral("插入 LaTeX 公式"));
+    connect(formulaButton, &QToolButton::clicked, formulaAction, &QAction::trigger);
     moreMenu->addAction(QStringLiteral("插入表格…"), this, [this] { m_editor->showTableDialog(); });
     moreMenu->addAction(QStringLiteral("选区转为表格"), this, [this] { m_editor->showSelectionToTable(); });
     moreFormat->setMenu(moreMenu); moreFormat->setPopupMode(QToolButton::InstantPopup);
@@ -602,7 +642,17 @@ void MainWindow::buildUi()
     emptyLayout->addWidget(emptyCreate, 0, Qt::AlignHCenter);
     emptyLayout->addStretch();
     m_documentStack->addWidget(empty);
-    editorLayout->addWidget(m_documentStack, 1);
+    auto* documentRow = new QHBoxLayout; documentRow->setSpacing(0);
+    documentRow->addWidget(m_documentStack, 1);
+    m_outline = new DocumentOutline(m_editor, editorPane); documentRow->addWidget(m_outline);
+    connect(m_outline, &DocumentOutline::headingsChanged, this, [this](int count) {
+        m_outlineButton->setText(count ? QStringLiteral("大纲 · %1").arg(count) : QStringLiteral("大纲"));
+    });
+    connect(m_outline, &DocumentOutline::closeRequested, this, [this] {
+        m_outlineRequested = false; QSettings().setValue(QStringLiteral("navigation/showOutline"), false);
+        updateAdaptiveLayout();
+    });
+    editorLayout->addLayout(documentRow, 1);
 
     auto* footer = new QFrame(editorPane);
     footer->setObjectName(QStringLiteral("editorFooter"));
@@ -697,6 +747,9 @@ void MainWindow::buildUi()
     connect(numberedButton, &QToolButton::clicked, this, [this] { toggleList(true); });
     connect(colorButton, &QToolButton::clicked, this, &MainWindow::pickTextColor);
     connect(imageButton, &QToolButton::clicked, this, &MainWindow::chooseImages);
+    connect(m_alignLeftButton, &QToolButton::clicked, this, [this] { m_editor->applyAlignment(Qt::AlignLeft); });
+    connect(m_alignCenterButton, &QToolButton::clicked, this, [this] { m_editor->applyAlignment(Qt::AlignHCenter); });
+    connect(m_alignRightButton, &QToolButton::clicked, this, [this] { m_editor->applyAlignment(Qt::AlignRight); });
     connect(addTodo, &QPushButton::clicked, this, &MainWindow::addTodo);
     connect(clearTodo, &QPushButton::clicked, this, &MainWindow::clearCompletedTodos);
     connect(minimize, &QToolButton::clicked, this, &MainWindow::showMinimized);
@@ -787,19 +840,29 @@ void MainWindow::buildMenus()
     renameAction->setShortcut(QKeySequence(Qt::Key_F2));
     QAction* deleteAction = fileMenu->addAction(QStringLiteral("移到回收站"));
     deleteAction->setShortcut(QKeySequence::Delete);
+    auto* recoveryAction=fileMenu->addAction(QStringLiteral("恢复中心…"),this,&MainWindow::showRecovery);recoveryAction->setObjectName("recoveryAction");
     fileMenu->addSeparator();
     QAction* quitAction = fileMenu->addAction(QStringLiteral("退出夜航"));
     quitAction->setShortcut(QKeySequence::Quit);
 
+    auto* editMenu=m_appMenuBar->addMenu(QStringLiteral("编辑(&E)"));
+    editMenu->addAction(findChild<QAction*>("findNoteAction"));editMenu->addAction(findChild<QAction*>("replaceNoteAction"));
+    auto* historyAction=editMenu->addAction(QStringLiteral("航迹 · 修改记录…"),this,&MainWindow::showHistory);historyAction->setObjectName("historyAction");
+    editMenu->addAction(QStringLiteral("选段生成便签"),this,&MainWindow::captureSelection);
     auto* insertMenu = m_appMenuBar->addMenu(QStringLiteral("插入(&I)"));
+    auto* voice=insertMenu->addAction(QStringLiteral("语音输入与转写…"),this,&MainWindow::showVoiceInput);voice->setObjectName("voiceInputAction");voice->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+M")));
     QAction* imageAction = insertMenu->addAction(QStringLiteral("图片…"));
     insertMenu->addAction(QStringLiteral("表格…"), m_editor, &NoteEditor::showTableDialog);
+    insertMenu->addAction(QStringLiteral("LaTeX 公式…"), m_editor, &NoteEditor::showFormulaDialog);
     insertMenu->addAction(QStringLiteral("选区转为表格"), m_editor, &NoteEditor::showSelectionToTable);
     imageAction->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+I")));
     QAction* stickyAction = insertMenu->addAction(QStringLiteral("新建桌面便签"));
     stickyAction->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+N")));
 
     auto* manageMenu = m_appMenuBar->addMenu(QStringLiteral("管理(&M)"));
+    auto* aiAction=manageMenu->addAction(QStringLiteral("AI 交接与 MCP…"),this,&MainWindow::showAiHandoff);aiAction->setObjectName("aiHandoffAction");
+    auto* templates=manageMenu->addAction(QStringLiteral("笔记模板…"),this,&MainWindow::showTemplates);templates->setObjectName("templatesAction");
+    auto* sourceRefresh=manageMenu->addAction(QStringLiteral("刷新外部目录"),this,&MainWindow::refreshLinkedFolders);sourceRefresh->setObjectName("refreshSourcesAction");
     QAction* collectAction = manageMenu->addAction(QStringLiteral("收舟入册…"));
     collectAction->setObjectName(QStringLiteral("collectStickiesAction"));
     collectAction->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+B")));
@@ -965,7 +1028,12 @@ void MainWindow::updateAdaptiveLayout()
 {
     if (!m_navigation || !m_todoPane || !m_formatBar) return;
     const bool narrow = width() < 1200;
-    const bool showTodo = !m_focusMode && m_todoRequested && (!narrow || m_narrowTodoOverride);
+    const bool showTodo = !m_focusMode && m_todoRequested && (!narrow || m_narrowTodoOverride)
+        && (!m_outlineRequested || width() >= 1500);
+    if (m_outline) m_outline->setVisible(m_outlineRequested && m_currentNoteId > 0);
+    if (m_outlineButton) m_outlineButton->setChecked(m_outlineRequested);
+    if (auto* formulaButton = findChild<QToolButton*>(QStringLiteral("formulaButton")))
+        formulaButton->setVisible(width() >= 1080 && (!m_outlineRequested || width() >= 1400));
     m_navigation->setFixedWidth(width() < 1080 ? 242 : 280);
     m_navigation->setVisible(!m_focusMode && width() >= 900 && !(narrow && showTodo));
     m_todoPane->setVisible(showTodo);
@@ -997,6 +1065,8 @@ void MainWindow::updateDocumentInfo()
 {
     if (!m_editor || !m_noteMeta) return;
     const bool exists = m_currentNoteId > 0;
+    m_outlineButton->setEnabled(exists);
+    m_outline->setVisible(exists && m_outlineRequested);
     m_wordCountLabel->setText(exists
         ? QStringLiteral("%1 字符").arg(qMax(0, m_editor->document()->characterCount() - 1))
         : QString());
@@ -1006,7 +1076,8 @@ void MainWindow::updateDocumentInfo()
             m_noteFolderCombo->currentText())
         : QString());
     m_openStickyButton->setVisible(exists && m_currentNoteKind == QStringLiteral("sticky"));
-    m_formatBar->setEnabled(exists && m_currentNoteKind != QStringLiteral("sticky"));
+    m_formatBar->setEnabled(exists && m_currentNoteKind != QStringLiteral("sticky") && !m_linkedSource);
+    if(m_sourceBar)m_sourceBar->setVisible(exists && m_linkedSource.has_value());
     m_noteFolderCombo->setEnabled(exists);
     m_documentStack->setCurrentIndex(exists ? 0 : 1);
     if (!exists) {
@@ -1092,7 +1163,11 @@ void MainWindow::connectSignals()
                 m_treeFolderId = current->data(Qt::UserRole + 3).toLongLong();
                 const qint64 id = current->data(Qt::UserRole).toLongLong();
                 if (id != m_currentNoteId) {
-                    saveCurrentNote();
+                    if(!saveCurrentNote()){
+                        QSignalBlocker blocker(m_noteList);
+                        for(int row=0;row<m_noteList->count();++row)if(m_noteList->item(row)->data(Qt::UserRole).toLongLong()==m_currentNoteId){m_noteList->setCurrentRow(row,false);break;}
+                        return;
+                    }
                     loadNote(id);
                 }
             });
@@ -1179,8 +1254,16 @@ void MainWindow::refreshNotes(qint64 preferredId)
         return;
 
     QString error;
-    const QList<NoteSummary> notes = m_database->listNoteSummaries(
+    QList<NoteSummary> notes = m_database->listNoteSummaries(
         m_searchEdit->text().trimmed(), &error, m_folderFilter->currentData().toLongLong());
+    QHash<qint64,NoteActivity> activity;
+    for(const auto& item:WorkspaceStore(*m_database).activities())activity.insert(item.noteId,item);
+    if(m_viewMode=="pinned")notes.erase(std::remove_if(notes.begin(),notes.end(),[&](const NoteSummary& note){return !activity.value(note.id).pinned;}),notes.end());
+    if(m_viewMode=="recent"){
+        notes.erase(std::remove_if(notes.begin(),notes.end(),[&](const NoteSummary& note){return !activity.value(note.id).openedAt.isValid();}),notes.end());
+        std::stable_sort(notes.begin(),notes.end(),[&](const NoteSummary& a,const NoteSummary& b){return activity.value(a.id).openedAt>activity.value(b.id).openedAt;});
+        if(notes.size()>100)notes=notes.mid(0,100);
+    }
     if (!error.isEmpty()) {
         setStatusMessage(databaseErrorText(QStringLiteral("读取笔记失败"), error), true);
         return;
@@ -1202,7 +1285,7 @@ void MainWindow::refreshNotes(qint64 preferredId)
             ? note.updatedAt.toLocalTime().toString(QStringLiteral("MM-dd  HH:mm"))
             : QStringLiteral("刚刚");
         auto* item = m_noteList->addNote(
-            noteListText(note.title, note.excerpt, note.kind, note.updatedAt), note.folderId);
+            (activity.value(note.id).pinned?QStringLiteral("★ "):QString())+noteListText(note.title, note.excerpt, note.kind, note.updatedAt), note.folderId);
         item->setData(Qt::UserRole, note.id);
         item->setData(Qt::UserRole + 1, note.bodyRevision);
         item->setData(Qt::UserRole + 2, note.contentHash);
@@ -1232,6 +1315,7 @@ void MainWindow::refreshNotes(qint64 preferredId)
         m_titleEdit->clear();
         m_editor->setReadOnly(false);
         m_editor->clear();
+        m_linkedSource.reset();m_sourceSnapshot.reset();m_sourceEditor->clear();m_bodyStack->setCurrentIndex(0);
         selectCurrentFolderInEditor();
         m_loadingNote = false;
         updateDocumentInfo();
@@ -1240,7 +1324,7 @@ void MainWindow::refreshNotes(qint64 preferredId)
 
     if (selectedRow < 0)
         selectedRow = 0;
-    m_noteList->setCurrentRow(selectedRow);
+    m_noteList->setCurrentRow(selectedRow, preferredId > 0 || !m_searchEdit->text().trimmed().isEmpty());
     const qint64 selectedId = m_noteList->currentItem()->data(Qt::UserRole).toLongLong();
     const int selectedRevision = m_noteList->currentItem()->data(Qt::UserRole + 1).toInt();
     if (selectedId != m_currentNoteId || selectedRevision != m_currentBodyRevision)
@@ -1250,6 +1334,26 @@ void MainWindow::refreshNotes(qint64 preferredId)
 
 void MainWindow::loadNote(qint64 noteId)
 {
+    if (m_dirty && (noteId == m_currentNoteId || !saveCurrentNote())) return;
+    rememberReadingPosition();
+    m_sourceLoadError.clear();
+    m_linkedSource = m_database->linkedSource(noteId, &m_sourceLoadError);
+    m_sourceSnapshot.reset();
+    if (m_linkedSource) {
+        m_sourceSnapshot = SourceFile::read(m_linkedSource->sourcePath, &m_sourceLoadError);
+        if (m_sourceSnapshot) {
+            if (m_sourceSnapshot->hash != m_linkedSource->sourceHash) {
+                QString html,plain;
+                DocumentImporter::renderDocument(m_sourceSnapshot->text,m_linkedSource->sourceKind,QFileInfo(m_linkedSource->sourcePath).absolutePath(),&html,&plain);
+                const auto current=m_database->note(noteId,&m_sourceLoadError);
+                if(current && m_database->updateNote(noteId,current->title,html,plain,&m_sourceLoadError,QStringLiteral("外部同步"),current->contentHash,&m_sourceSnapshot->bytes)) {
+                    m_noteCache.remove(noteId);m_linkedSource->sourceHash=m_sourceSnapshot->hash;
+                }
+            } else if(WorkspaceStore(*m_database).cachedSource(noteId)!=m_sourceSnapshot->bytes) {
+                WorkspaceStore(*m_database).cacheSource(noteId,m_sourceSnapshot->bytes,&m_sourceLoadError);
+            }
+        }
+    }
     NoteRecord loaded;
     bool cacheHit = false;
     const int expectedRevision = summaryRevision(noteId);
@@ -1280,7 +1384,9 @@ void MainWindow::loadNote(qint64 noteId)
     m_titleEdit->setText(loaded.title);
     selectCurrentFolderInEditor();
     m_editor->setHtml(loaded.html);
-    m_editor->setReadOnly(loaded.kind == QStringLiteral("sticky"));
+    m_outline->rebuild(true);
+    m_editor->setReadOnly(loaded.kind == QStringLiteral("sticky") || m_linkedSource.has_value());
+    loadSourceState(noteId, loaded);
     m_editor->document()->setModified(false);
     m_dirty = false;
     m_loadingNote = false;
@@ -1291,6 +1397,13 @@ void MainWindow::loadNote(qint64 noteId)
     updateFormatControls();
     m_noteMeta->setToolTip(m_database->noteSourcePath(noteId));
     refreshTodos();
+    if(!m_historyJump && (m_navigationHistory.isEmpty() || m_navigationHistory.value(m_navigationIndex)!=noteId)) {
+        while(m_navigationHistory.size()>m_navigationIndex+1)m_navigationHistory.removeLast();
+        m_navigationHistory.append(noteId);if(m_navigationHistory.size()>100)m_navigationHistory.removeFirst();
+        m_navigationIndex=int(m_navigationHistory.size())-1;
+    }
+    m_backButton->setEnabled(m_navigationIndex>0);
+    m_forwardButton->setEnabled(m_navigationIndex+1<m_navigationHistory.size());
 }
 
 bool MainWindow::saveCurrentNote(bool force)
@@ -1305,30 +1418,71 @@ bool MainWindow::saveCurrentNote(bool force)
     if (title.isEmpty())
         title = QStringLiteral("无标题笔记");
 
-    const QString html = m_editor->toHtml();
-    const QString plainText = m_editor->toPlainText();
+    QString html = m_editor->toHtml();
+    QString plainText = m_editor->toPlainText();
+    if(m_linkedSource && m_sourceSnapshot)
+        DocumentImporter::renderDocument(m_sourceEditor->toPlainText(),m_linkedSource->sourceKind,QFileInfo(m_linkedSource->sourcePath).absolutePath(),&html,&plainText);
     const QByteArray hash = htmlHash(html);
-    const bool bodyChanged = hash != m_currentContentHash;
+    const bool sourceChanged=m_linkedSource && m_sourceSnapshot && m_sourceEditor->toPlainText()!=m_sourceSnapshot->text;
+    const bool bodyChanged = hash != m_currentContentHash || sourceChanged;
     const bool stickyMetadataOnly = m_currentNoteKind == QStringLiteral("sticky")
         && m_editor->isReadOnly();
     const bool metadataOnly = stickyMetadataOnly || !bodyChanged;
 
     QString error;
+    std::optional<LinkedSourceRecord> linkedSource;
+    QByteArray linkedBytes;
+    SourceWriteResult sourceWrite;
+    if (bodyChanged && m_currentNoteKind == QStringLiteral("note")) {
+        linkedSource = m_database->linkedSource(m_currentNoteId, &error);
+        if (!error.isEmpty()) {
+            setStatusMessage(databaseErrorText(QStringLiteral("读取对接文件失败"), error), true);
+            m_saveTimer->start(1600);
+            return false;
+        }
+        if (linkedSource.has_value()) {
+            const auto current=m_database->note(m_currentNoteId,&error);
+            if(!m_sourceSnapshot || !current || current->contentHash!=m_currentContentHash) {
+                keepRecoveryDraft(html,plainText);
+                setStatusMessage(QStringLiteral("文档已变化，编辑草稿保留在恢复中心；请比较版本。"),true);return false;
+            }
+            if(!WorkspaceStore(*m_database).capture(m_currentNoteId,QStringLiteral("写回源文件前"),&error)){
+                setStatusMessage(error,true);return false;
+            }
+            sourceWrite=SourceFile::write(*m_sourceSnapshot,m_sourceEditor->toPlainText(),QDir(m_database->dataDirectory()).filePath("write-recovery"));
+            if(!sourceWrite.success()){
+                const bool preserved=keepRecoveryDraft(html,plainText);
+                m_sourceState->setText(sourceWrite.error);
+                setStatusMessage(sourceWrite.error+(preserved?QStringLiteral(" · 新稿已保存到恢复中心"):QString()),true);return false;
+            }
+            linkedBytes=sourceWrite.bytes;
+        }
+    }
     const bool saved = metadataOnly
         ? m_database->renameNote(m_currentNoteId, title, &error)
-        : m_database->updateNote(m_currentNoteId, title, html, plainText, &error);
+        : m_database->updateNote(m_currentNoteId, title, html, plainText, &error,QStringLiteral("编辑保存"),m_currentContentHash,linkedSource?&linkedBytes:nullptr);
     if (!saved) {
+        keepRecoveryDraft(html,plainText);
         setStatusMessage(databaseErrorText(QStringLiteral("自动保存失败"), error), true);
         m_saveTimer->start(1600);
         return false;
     }
+    if (linkedSource.has_value()) {
+        QString linkedError;
+        m_sourceSnapshot=SourceFile::decode(linkedBytes,&linkedError);
+        if(m_sourceSnapshot)m_sourceSnapshot->path=linkedSource->sourcePath;
+        if(!SourceFile::finishWrite(sourceWrite,&linkedError))setStatusMessage(linkedError,true);
+        m_sourceState->setText(QStringLiteral("已写回 · %1").arg(QFileInfo(linkedSource->sourcePath).fileName()));
+    }
+    WorkspaceStore(*m_database).clearDraft(m_currentNoteId);
 
     m_dirty = false;
-    if (!metadataOnly)
+    if (!metadataOnly && hash!=m_currentContentHash)
         ++m_currentBodyRevision;
     if (!stickyMetadataOnly)
         m_currentContentHash = hash;
     m_editor->document()->setModified(false);
+    m_sourceEditor->document()->setModified(false);
     const QDateTime updatedAt = QDateTime::currentDateTimeUtc();
 
     NoteRecord cached;
@@ -1396,7 +1550,7 @@ void MainWindow::scheduleSave()
 
 void MainWindow::createNote()
 {
-    saveCurrentNote(true);
+    if(!saveCurrentNote(true))return;
     QString error;
     const qint64 filterFolder = selectedFolderFilter();
     const qint64 destinationFolder = filterFolder > 0
@@ -1522,17 +1676,14 @@ void MainWindow::collectStickies()
     auto* titleLabel = new QLabel(QStringLiteral("笔记名称"), &dialog);
     titleLabel->setObjectName(QStringLiteral("collectFormLabel"));
     form->addRow(titleLabel, titleEdit);
-    auto* folderCombo = new NocturneComboBox(&dialog);
+    auto* folderCombo = new FolderComboBox(&dialog);
     folderCombo->setObjectName(QStringLiteral("collectFolderCombo"));
-    folderCombo->addItem(QStringLiteral("未分组"), Database::UnfiledFolder);
     const QList<FolderRecord> folders = m_database->listFolders(&error);
     if (!error.isEmpty()) {
         setStatusMessage(databaseErrorText(QStringLiteral("读取分组失败"), error), true);
         return;
     }
-    const auto collectionPaths = folderPaths(folders);
-    for (const FolderRecord& folder : folders)
-        folderCombo->addItem(collectionPaths.value(folder.id), folder.id);
+    folderCombo->setFolders(folders);
     const int currentFolderIndex = folderCombo->findData(
         m_currentFolderId > 0 ? m_currentFolderId : Database::UnfiledFolder);
     folderCombo->setCurrentIndex(std::max(0, currentFolderIndex));
@@ -1746,6 +1897,7 @@ void MainWindow::showNoteContextMenu(const QPoint& position)
     if (!item)
         return;
     m_noteList->setCurrentItem(item);
+    if(!item->isFolder() && item->data(Qt::UserRole).toLongLong()!=m_currentNoteId)return;
 
     QMenu menu(this);
     if (item->isFolder()) {
@@ -1757,6 +1909,7 @@ void MainWindow::showNoteContextMenu(const QPoint& position)
         menu.addAction(QStringLiteral("导入文件夹…"), this, &MainWindow::importFolder);
         if (id > 0) {
             menu.addSeparator();
+            if(!WorkspaceStore(*m_database).linkedFolderPath(id).isEmpty())menu.addAction(QStringLiteral("重新关联目录位置…"),this,&MainWindow::relinkSelectedDirectory);
             menu.addAction(QStringLiteral("重命名目录…"), this, &MainWindow::renameSelectedFolder);
             menu.addAction(QStringLiteral("移动目录…"), this, &MainWindow::moveSelectedFolder);
             menu.addAction(QStringLiteral("删除目录（笔记保留）…"), this, &MainWindow::deleteSelectedFolder);
@@ -1772,6 +1925,10 @@ void MainWindow::showNoteContextMenu(const QPoint& position)
         menu.addSeparator();
     }
     QAction* renameAction = menu.addAction(QStringLiteral("重命名"));
+    const qint64 noteId=item->data(Qt::UserRole).toLongLong();
+    const bool pinned=WorkspaceStore(*m_database).activity(noteId).pinned;
+    menu.addAction(pinned?QStringLiteral("取消置顶"):QStringLiteral("置顶笔记"),this,[this,noteId,pinned]{QString error;if(!WorkspaceStore(*m_database).setPinned(noteId,!pinned,&error))setStatusMessage(error,true);else refreshNotes(m_currentNoteId);});
+    menu.addAction(QStringLiteral("航迹 · 修改记录…"),this,&MainWindow::showHistory);
     QAction* deleteAction = menu.addAction(QStringLiteral("移到回收站"));
     QAction* selected = menu.exec(m_noteList->viewport()->mapToGlobal(position));
     if (openStickyAction && selected == openStickyAction)
@@ -1788,9 +1945,10 @@ void MainWindow::deleteCurrentNote()
 {
     if (m_currentNoteId < 0)
         return;
+    if(!saveCurrentNote())return;
     if (NocturneDialogs::question(this,
                               QStringLiteral("移到回收站"),
-                              QStringLiteral("将当前笔记移到数据库回收站？\n原型暂未提供回收站界面。"),
+                              QStringLiteral("将当前笔记移到回收站？可从“恢复中心”找回。\n对接文档的磁盘源文件会保留。"),
                               QMessageBox::Yes | QMessageBox::Cancel,
                               QMessageBox::Cancel) != QMessageBox::Yes) {
         return;
@@ -1950,11 +2108,8 @@ void MainWindow::moveSelectedFolder()
     dialog.setWindowTitle(QStringLiteral("移动目录 · 夜航")); dialog.resize(420, 210);
     auto* layout = new QVBoxLayout(dialog.body()); layout->setContentsMargins(24, 24, 24, 24);
     layout->addWidget(new QLabel(QStringLiteral("选择目标父目录"), dialog.body()));
-    auto* target = new NocturneComboBox(dialog.body());
-    target->addItem(QStringLiteral("顶级目录"), 0);
-    for (int i = 0; i < m_noteFolderCombo->count(); ++i)
-        if (m_noteFolderCombo->itemData(i).toLongLong() > 0 && m_noteFolderCombo->itemData(i).toLongLong() != id)
-            target->addItem(m_noteFolderCombo->itemText(i), m_noteFolderCombo->itemData(i));
+    auto* target = new FolderComboBox(dialog.body());
+    target->setFolders(m_database->listFolders(), false, QStringLiteral("顶级目录"), id);
     layout->addWidget(target);
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, dialog.body());
     buttons->button(QDialogButtonBox::Ok)->setText(QStringLiteral("移动"));
@@ -2032,18 +2187,9 @@ void MainWindow::refreshFolders(qint64 preferredFilter)
     const QSignalBlocker filterBlocker(m_folderFilter);
     const QSignalBlocker noteFolderBlocker(m_noteFolderCombo);
 
-    m_folderFilter->clear();
-    m_folderFilter->addItem(QStringLiteral("全部笔记"), Database::AllFolders);
-    m_folderFilter->addItem(QStringLiteral("未分组"), Database::UnfiledFolder);
-
-    m_noteFolderCombo->clear();
-    m_noteFolderCombo->addItem(QStringLiteral("未分组"), Database::UnfiledFolder);
-
-    const auto paths = folderPaths(folders);
-    for (const FolderRecord& folder : folders) {
-        m_folderFilter->addItem(paths.value(folder.id), folder.id);
-        m_noteFolderCombo->addItem(paths.value(folder.id), folder.id);
-    }
+    m_folderFilter->setFolders(folders, true);
+    m_noteFolderCombo->setFolders(folders);
+    if(m_todoFolderFilter){QSignalBlocker blocker(m_todoFolderFilter);const auto selected=m_todoFolderFilter->currentIndex()<0?Database::AllFolders:m_todoFolderFilter->currentData().toLongLong();static_cast<FolderComboBox*>(m_todoFolderFilter)->setFolders(folders,true);m_todoFolderFilter->setCurrentIndex(std::max(0,m_todoFolderFilter->findData(selected)));}
 
     int filterIndex = m_folderFilter->findData(preferredFilter);
     if (filterIndex < 0)
@@ -2186,23 +2332,25 @@ void MainWindow::moveCurrentNoteToSelectedFolder()
 void MainWindow::refreshTodos()
 {
     QString error;
-    const QList<TodoRecord> todos = m_database->listTodos(&error);
+    QList<TodoRecord> todos = m_database->listTodos(&error);
     if (!error.isEmpty()) {
         setStatusMessage(databaseErrorText(QStringLiteral("读取待办失败"), error), true);
         return;
     }
 
+    QHash<QString,bool> todoStates;
+    for(const auto& todo:todos)if(todo.noteId==m_currentNoteId)todoStates.insert(todo.anchor,todo.done);
+    const qint64 folder=m_todoFolderFilter && m_todoFolderFilter->currentIndex()>=0?m_todoFolderFilter->currentData().toLongLong():Database::AllFolders;
+    if(folder!=Database::AllFolders){QSet<qint64> notes;for(const auto& note:m_database->listNoteSummaries({},&error,folder))notes.insert(note.id);todos.erase(std::remove_if(todos.begin(),todos.end(),[&](const TodoRecord& todo){return todo.noteId>0?!notes.contains(todo.noteId):folder!=Database::UnfiledFolder;}),todos.end());}
     m_loadingTodos = true;
     m_todoList->clear();
     int completed = 0;
-    QHash<QString, bool> todoStates;
     for (const TodoRecord& todo : todos) {
         auto* item = new QListWidgetItem(todo.text, m_todoList);
         item->setData(Qt::UserRole, todo.id);
         item->setData(Qt::UserRole + 1, todo.noteId);
         item->setData(Qt::UserRole + 2, todo.anchor);
         item->setToolTip(todo.noteId > 0 ? QStringLiteral("来自：%1\n双击定位正文").arg(todo.noteTitle) : todo.text);
-        if (todo.noteId == m_currentNoteId) todoStates.insert(todo.anchor, todo.done);
         item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
         item->setCheckState(todo.done ? Qt::Checked : Qt::Unchecked);
         item->setSizeHint(QSize(0, 44));
@@ -2461,10 +2609,12 @@ void MainWindow::suspendHeavyContent()
     if (!saveCurrentNote(true))
         return;
 
+    rememberReadingPosition();
     m_saveTimer->stop();
     m_noteCache.clear();
     m_loadingNote = true;
     m_editor->clear();
+    m_sourceEditor->clear();m_sourceSnapshot.reset();MathSupport::clearCache();
     m_editor->document()->clearUndoRedoStacks();
     m_editor->document()->setModified(false);
     m_loadingNote = false;
@@ -2475,9 +2625,9 @@ void MainWindow::resumeHeavyContent()
 {
     if (!m_contentSuspended)
         return;
-    m_contentSuspended = false;
     if (m_currentNoteId > 0)
         loadNote(m_currentNoteId);
+    m_contentSuspended = false;
 }
 
 StickyNoteWindow* MainWindow::openSticky(qint64 noteId, bool activate)
@@ -2496,6 +2646,16 @@ StickyNoteWindow* MainWindow::openSticky(qint64 noteId, bool activate)
 
     auto* window = new StickyNoteWindow(m_database, noteId);
     m_stickyWindows.append(window);
+    connect(window,&StickyNoteWindow::sourceRequested,this,[this](qint64 stickyId){
+        const auto source=WorkspaceStore(*m_database).captureSource(stickyId);if(!source)return;
+        showMainWindow();openNoteById(source->sourceNoteId);
+        if(m_currentNoteId!=source->sourceNoteId)return;
+        auto* document=m_bodyStack->currentIndex()==1?m_sourceEditor->document():m_editor->document();
+        QTextCursor found(document);found.setPosition(std::clamp(source->position,0,document->characterCount()-1));
+        found.setPosition(std::min(found.position()+int(source->text.size()),document->characterCount()-1),QTextCursor::KeepAnchor);
+        if(found.selectedText().replace(QChar::ParagraphSeparator,'\n')!=source->text){found=document->find(source->text,0);if(!found.isNull() && !document->find(source->text,found).isNull())found=QTextCursor();}
+        if(!found.isNull()){if(m_bodyStack->currentIndex()==1){m_sourceEditor->setTextCursor(found);m_sourceEditor->ensureCursorVisible();}else{m_editor->setTextCursor(found);m_editor->ensureCursorVisible();}}else setStatusMessage(QStringLiteral("已打开来源笔记；原选段已发生变化。"));
+    });
     connect(window, &StickyNoteWindow::noteSaved, this,
             [this](qint64 savedNoteId) {
                 m_noteCache.remove(savedNoteId);
@@ -2683,6 +2843,10 @@ void MainWindow::updateFormatControls()
         const int level = m_editor->textCursor().blockFormat().headingLevel();
         m_headingButton->setText(level ? QStringLiteral("H%1").arg(level) : QStringLiteral("H"));
     }
+    const Qt::Alignment alignment = m_editor->currentAlignment();
+    if (m_alignLeftButton) m_alignLeftButton->setChecked(alignment.testFlag(Qt::AlignLeft));
+    if (m_alignCenterButton) m_alignCenterButton->setChecked(alignment.testFlag(Qt::AlignHCenter));
+    if (m_alignRightButton) m_alignRightButton->setChecked(alignment.testFlag(Qt::AlignRight));
     const QTextCharFormat format = m_editor->currentCharFormat();
     const QSignalBlocker boldBlocker(m_boldButton);
     const QSignalBlocker italicBlocker(m_italicButton);
@@ -2729,7 +2893,8 @@ bool MainWindow::nativeEvent(const QByteArray& eventType, void* message, qintptr
 
 void MainWindow::closeEvent(QCloseEvent* event)
 {
-    saveCurrentNote(true);
+    if(!saveCurrentNote(true)){event->ignore();return;}
+    rememberReadingPosition();
     QSettings settings;
     settings.setValue(QStringLiteral("main/geometry"), saveGeometry());
 

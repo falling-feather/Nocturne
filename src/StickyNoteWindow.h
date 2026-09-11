@@ -34,6 +34,7 @@ public slots:
 
 signals:
     void noteSaved(qint64 noteId);
+    void sourceRequested(qint64 noteId);
 
 protected:
     void closeEvent(QCloseEvent* event) override;

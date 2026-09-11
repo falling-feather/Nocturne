@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(Nocturne VERSION 0.2.0 LANGUAGES CXX)
+project(Nocturne VERSION 0.3.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -11,6 +11,13 @@ set(CMAKE_AUTOUIC ON)
 set(CMAKE_AUTORCC ON)
 
 find_package(Qt6 6.5 REQUIRED COMPONENTS Widgets Sql)
+include(scripts/MathRuntime.cmake)
+
+qt_add_executable(NocturneAudio WIN32 src/AudioMain.cpp src/VoiceDecode.cpp src/VoiceWave.cpp)
+target_link_libraries(NocturneAudio PRIVATE Qt6::Core)
+if(WIN32)
+    target_link_libraries(NocturneAudio PRIVATE mfplat mfreadwrite mfuuid ole32)
+endif()
 
 qt_add_executable(Nocturne WIN32
     src/main.cpp
@@ -28,8 +35,14 @@ qt_add_executable(Nocturne WIN32
     src/DocumentImporter.cpp
     src/NotebookTree.h
     src/NotebookTree.cpp
+    src/FolderComboBox.h
+    src/FolderComboBox.cpp
+    src/DocumentOutline.h
+    src/DocumentOutline.cpp
     src/NoteEditor.h
     src/NoteEditor.cpp
+    src/MathSupport.h
+    src/MathSupport.cpp
     src/NocturneDialogs.h
     src/NocturneDialogs.cpp
     src/NocturneStyle.h
@@ -44,6 +57,7 @@ qt_add_executable(Nocturne WIN32
 target_link_libraries(Nocturne PRIVATE
     Qt6::Widgets
     Qt6::Sql
+    NocturneMathRuntime
 )
 
 if(WIN32)
@@ -62,6 +76,7 @@ if(WIN32)
     )
 endif()
 
+
 target_compile_definitions(Nocturne PRIVATE
     NOCTURNE_VERSION="${PROJECT_VERSION}"
 )
@@ -69,11 +84,16 @@ target_compile_definitions(Nocturne PRIVATE
 set_target_properties(Nocturne PROPERTIES
     OUTPUT_NAME "Nocturne"
 )
+add_dependencies(Nocturne NocturneAudio)
+configure_file(scripts/install-voice.ps1 "${CMAKE_CURRENT_BINARY_DIR}/install-voice.ps1" COPYONLY)
+file(COPY scripts/voice-licenses DESTINATION "${CMAKE_CURRENT_BINARY_DIR}")
 
 include(GNUInstallDirs)
-install(TARGETS Nocturne
+install(TARGETS Nocturne NocturneAudio
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
+install(FILES scripts/install-voice.ps1 DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(DIRECTORY scripts/voice-licenses DESTINATION ${CMAKE_INSTALL_BINDIR})
 
 include(CTest)
 if(BUILD_TESTING)
@@ -99,6 +119,7 @@ if(BUILD_TESTING)
     qt_add_executable(NocturneDesktopUiTest
         tests/DesktopUiSmoke.cpp
         tests/DocumentWorkflow.cpp
+        tests/WorkspaceUiWorkflow.cpp
         src/BackupManager.h
         src/BackupManager.cpp
         src/Branding.h
@@ -113,8 +134,14 @@ if(BUILD_TESTING)
         src/DocumentImporter.cpp
         src/NotebookTree.h
         src/NotebookTree.cpp
+        src/FolderComboBox.h
+        src/FolderComboBox.cpp
+        src/DocumentOutline.h
+        src/DocumentOutline.cpp
         src/NoteEditor.h
         src/NoteEditor.cpp
+        src/MathSupport.h
+        src/MathSupport.cpp
         src/NocturneDialogs.h
         src/NocturneDialogs.cpp
         src/NocturneStyle.h
@@ -126,7 +153,7 @@ if(BUILD_TESTING)
         assets/nocturne.qrc
     )
     target_include_directories(NocturneDesktopUiTest PRIVATE src)
-    target_link_libraries(NocturneDesktopUiTest PRIVATE Qt6::Widgets Qt6::Sql)
+    target_link_libraries(NocturneDesktopUiTest PRIVATE Qt6::Widgets Qt6::Sql NocturneMathRuntime)
     if(WIN32)
         target_link_libraries(NocturneDesktopUiTest PRIVATE user32)
         target_compile_definitions(NocturneDesktopUiTest PRIVATE
@@ -154,4 +181,29 @@ if(BUILD_TESTING)
     )
     add_test(NAME backup_smoke COMMAND NocturneBackupTest)
     set_tests_properties(backup_smoke PROPERTIES TIMEOUT 60)
+
+    qt_add_executable(NocturneWorkspaceTest tests/WorkspaceSmoke.cpp src/Database.h src/Database.cpp)
+    target_include_directories(NocturneWorkspaceTest PRIVATE src)
+    target_link_libraries(NocturneWorkspaceTest PRIVATE Qt6::Sql)
+    add_test(NAME workspace_smoke COMMAND NocturneWorkspaceTest)
+    set_tests_properties(workspace_smoke PROPERTIES TIMEOUT 60)
 endif()
+
+# These services participate in the same SQLite transactions as note writes.
+foreach(nocturne_target Nocturne NocturnePersistenceTest NocturnePerformanceTest NocturneDesktopUiTest NocturneBackupTest NocturneWorkspaceTest)
+    if(TARGET ${nocturne_target})
+        target_sources(${nocturne_target} PRIVATE src/WorkspaceStore.h src/WorkspaceStore.cpp src/SourceFile.h src/SourceFile.cpp)
+    endif()
+endforeach()
+
+foreach(nocturne_ui_target Nocturne NocturneDesktopUiTest)
+    if(TARGET ${nocturne_ui_target})
+    target_sources(${nocturne_ui_target} PRIVATE src/WorkspaceUi.cpp src/HistoryUi.cpp src/FindBar.h src/FindBar.cpp src/TextDiff.h src/TextDiff.cpp)
+    target_sources(${nocturne_ui_target} PRIVATE src/AiExchange.h src/AiExchange.cpp src/McpServer.cpp src/AiUi.cpp)
+    target_sources(${nocturne_ui_target} PRIVATE src/VoiceAudio.h src/VoiceAudio.cpp src/VoiceWave.cpp src/VoiceUi.cpp)
+    if(WIN32)
+        target_link_libraries(${nocturne_ui_target} PRIVATE winmm)
+    endif()
+    target_compile_definitions(${nocturne_ui_target} PRIVATE NOCTURNE_VERSION="${PROJECT_VERSION}")
+    endif()
+endforeach()
