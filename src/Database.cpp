@@ -1220,6 +1220,21 @@ bool Database::deleteFolder(qint64 id, QString *error)
     if (!database.isValid() || !beginTransaction(database, error))
         return false;
 
+    QSqlQuery sourcePaths(database);
+    sourcePaths.prepare(QStringLiteral("SELECT source_path FROM linked_folders WHERE folder_id=?"));
+    sourcePaths.addBindValue(id);
+    if (!sourcePaths.exec()) {
+        setError(error, sourcePaths.lastError().text()); database.rollback(); return false;
+    }
+    QStringList refreshPaths;
+    while (sourcePaths.next()) refreshPaths.append(sourcePaths.value(0).toString());
+    sourcePaths.finish();
+    for (const auto& path : refreshPaths) {
+        if (!WorkspaceStore(*this).setRefreshRoot(path, false, error)) {
+            database.rollback(); return false;
+        }
+    }
+
     const QString now = toStorageDateTime(QDateTime::currentDateTimeUtc());
     QSqlQuery detach(database);
     detach.prepare(QStringLiteral(

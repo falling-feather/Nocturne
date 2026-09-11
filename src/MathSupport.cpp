@@ -1,13 +1,16 @@
 #include "MathSupport.h"
 
 #include <QCache>
+#include <QBitArray>
 #include <QDirIterator>
+#include <QFontInfo>
 #include <QPainter>
 #include <QRegularExpression>
 #include <QTextBlock>
 #include <QTextCursor>
 #include <QTextFragment>
 #include <QTextImageFormat>
+#include <QTextTable>
 #include <QUuid>
 #include <algorithm>
 #include <memory>
@@ -18,7 +21,7 @@
 static void initializeMathFonts() { Q_INIT_RESOURCE(MathFonts); }
 
 namespace {
-struct Span { int start; int length; MathSupport::Formula formula; };
+struct Span { int start; int length; MathSupport::Formula formula; bool delimited = true; QString error; };
 bool escaped(const QString& text, int position)
 {
     int count = 0;
@@ -26,21 +29,71 @@ bool escaped(const QString& text, int position)
     return count % 2 != 0;
 }
 
-QList<Span> spans(const QString& text)
+void reserve(QBitArray& mask, int begin, int end)
+{
+    for (int i = std::max(0, begin); i < std::min(int(mask.size()), end); ++i) mask.setBit(i);
+}
+
+QBitArray literalMask(const QString& text)
+{
+    QBitArray mask(text.size());
+    static const QRegularExpression fence(QStringLiteral("^ {0,3}(`{3,}|~{3,})(.*)$"));
+    QChar fenceCharacter;
+    int fenceLength = 0;
+    bool frontMatter = text.startsWith("---\n");
+    for (int start = 0; start < text.size();) {
+        int end = text.indexOf('\n', start);
+        if (end < 0) end = text.size();
+        const QString line = text.mid(start, end - start);
+        const auto marker = fence.match(line);
+        if (frontMatter) {
+            reserve(mask, start, end + 1);
+            if (start > 0 && (line == "---" || line == "...")) frontMatter = false;
+        } else if (fenceLength) {
+            reserve(mask, start, end + 1);
+            if (marker.hasMatch() && marker.captured(1).front() == fenceCharacter
+                && marker.capturedLength(1) >= fenceLength && marker.captured(2).trimmed().isEmpty())
+                fenceLength = 0;
+        } else if (marker.hasMatch()) {
+            fenceCharacter = marker.captured(1).front(); fenceLength = marker.capturedLength(1);
+            reserve(mask, start, end + 1);
+        } else if (line.startsWith("    ") || line.startsWith('\t')) {
+            reserve(mask, start, end + 1);
+        }
+        start = end + 1;
+    }
+    for (int i = 0; i < text.size();) {
+        if (mask.testBit(i) || text[i] != '`' || escaped(text, i)) { ++i; continue; }
+        int count = 1;
+        while (i + count < text.size() && text[i + count] == '`') ++count;
+        int end = i + count;
+        while ((end = text.indexOf(QString(count, '`'), end)) >= 0) {
+            if ((end == 0 || text[end - 1] != '`')
+                && (end + count == text.size() || text[end + count] != '`')) break;
+            end += count;
+        }
+        if (end < 0) { i += count; continue; }
+        reserve(mask, i, end + count); i = end + count;
+    }
+    static const QRegularExpression paths(QStringLiteral("(?:\\b[A-Za-z]:[\\\\/]|\\b[A-Za-z][A-Za-z0-9+.-]*://)[^\\s]+"));
+    static const QRegularExpression links(QStringLiteral("!?\\[[^\\]\\n]*\\]\\((?:\\\\.|[^)\\n])*\\)"));
+    static const QRegularExpression htmlCode(QStringLiteral("<(code|pre)\\b[^>]*>[\\s\\S]*?</\\1\\s*>"), QRegularExpression::CaseInsensitiveOption);
+    static const QRegularExpression uncPaths(QStringLiteral("(?:^|(?<=\\s))\\\\\\\\[A-Za-z0-9_.-]+\\\\[^\\s]+"), QRegularExpression::MultilineOption);
+    for (const auto& expression : {paths, links, htmlCode, uncPaths}) {
+        auto matches = expression.globalMatch(text);
+        while (matches.hasNext()) {
+            const auto match = matches.next(); reserve(mask, match.capturedStart(), match.capturedEnd());
+        }
+    }
+    return mask;
+}
+
+QList<Span> spans(const QString& text, QBitArray* reserved = nullptr)
 {
     QList<Span> result;
+    QBitArray mask = literalMask(text);
     for (int i = 0; i < text.size();) {
-        // Markdown code spans and fenced blocks own their contents, including $.
-        if ((text[i] == '`' || (text[i] == '~' && (i == 0 || text[i-1] == '\n'))) && !escaped(text, i)) {
-            const QChar character = text[i];
-            int count = 1;
-            while (i + count < text.size() && text[i + count] == character) ++count;
-            if (character == '`' || count >= 3) {
-                const int end = text.indexOf(QString(count, character), i + count);
-                i = end < 0 ? text.size() : end + count;
-                continue;
-            }
-        }
+        if (mask.testBit(i)) { ++i; continue; }
         QString opening, closing;
         bool display = false;
         if (!escaped(text, i)) {
@@ -57,12 +110,150 @@ QList<Span> spans(const QString& text)
                     && (end + 1 == text.size() || !text[end+1].isDigit())))) break;
             end += closing.size();
         }
-        if (end < 0 || (!display && text.mid(i, end-i).contains('\n'))) { i += opening.size(); continue; }
+        if (end < 0 || (!display && text.mid(i, end-i).contains('\n'))) {
+            if (opening == "$" && text[i + 1].isDigit()) { ++i; continue; }
+            int stop = display ? text.size() : text.indexOf('\n', i);
+            if (stop < 0) stop = text.size();
+            if (reserved) result.append({i, stop - i,
+                {text.mid(i + opening.size(), stop - i - opening.size()), display}, true,
+                QStringLiteral("公式分隔符未闭合")});
+            reserve(mask, i, stop); i = stop; continue;
+        }
         const QString source = text.mid(i + opening.size(), end - i - opening.size());
-        if (!source.trimmed().isEmpty()) result.append({i, int(end + closing.size() - i), {source, display}});
+        bool literal = false;
+        for (int position = i; position < end + closing.size() && !literal; ++position)
+            literal = mask.testBit(position);
+        if (!literal && !source.trimmed().isEmpty()) result.append({i, int(end + closing.size() - i), {source, display}});
+        reserve(mask, i, end + closing.size());
         i = end + closing.size();
     }
+    if (reserved) *reserved = mask;
     return result;
+}
+
+bool latin(QChar c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'); }
+
+int environmentEnd(const QString& text, int start)
+{
+    static const QRegularExpression tags(QStringLiteral("\\\\(begin|end)\\{([A-Za-z*]+)\\}"));
+    auto matches = tags.globalMatch(text, start);
+    QStringList stack;
+    while (matches.hasNext()) {
+        const auto match = matches.next();
+        if (stack.isEmpty() && match.capturedStart() != start) return -1;
+        if (match.captured(1) == "begin") stack.append(match.captured(2));
+        else {
+            if (stack.isEmpty() || stack.takeLast() != match.captured(2)) return -1;
+            if (stack.isEmpty()) return match.capturedEnd();
+        }
+    }
+    return -1;
+}
+
+QList<Span> allSpans(const QString& text)
+{
+    QBitArray reserved;
+    auto result = spans(text, &reserved);
+    static const QRegularExpression command(QStringLiteral("\\\\[A-Za-z]+"));
+    static const QRegularExpression script(QStringLiteral("[A-Za-z][_^](?:[A-Za-z0-9]|\\{)"));
+    const QStringList functions = {"sin", "cos", "tan", "log", "ln", "lim", "max", "min", "exp", "det", "sup", "inf", "mod"};
+    int start = -1, end = 0, parentheses = 0;
+    bool environment = false;
+    auto finish = [&] {
+        if (start < 0) return;
+        while (start < end && text[start].isSpace()) ++start;
+        while (end > start && text[end - 1].isSpace()) --end;
+        const QString source = text.mid(start, end - start);
+        if (!source.isEmpty() && (command.match(source).hasMatch()
+                || (source.contains('=') && script.match(source).hasMatch()))) {
+            const int line = start > 0 ? text.lastIndexOf('\n', start - 1) + 1 : 0;
+            int lineEnd = text.indexOf('\n', end);
+            if (lineEnd < 0) lineEnd = text.size();
+            const bool standalone = text.mid(line, start - line).trimmed().isEmpty()
+                && text.mid(end, lineEnd - end).trimmed().isEmpty();
+            result.append({start, end - start, {source, environment || standalone}, false});
+        }
+        start = -1; parentheses = 0; environment = false;
+    };
+    for (int i = 0; i < text.size();) {
+        if (reserved.testBit(i) || text[i] == '\n') { finish(); ++i; continue; }
+        const QChar c = text[i];
+        int next = i + 1;
+        bool valid = false;
+        if (c == '\\' && !escaped(text, i) && i + 1 < text.size()) {
+            if (text.mid(i, 7) == "\\begin{") {
+                next = environmentEnd(text, i);
+                if (next < 0) next = text.size();
+                environment = true; valid = true;
+            } else if (latin(text[i + 1])) {
+                while (next < text.size() && latin(text[next])) ++next;
+                valid = true;
+            } else if (QStringLiteral(",;! {}|\\").contains(text[i + 1])) {
+                next = i + 2; valid = true;
+            }
+        } else if (c == '{') {
+            int depth = 1;
+            while (next < text.size() && text[next] != '\n' && !reserved.testBit(next)) {
+                if (!escaped(text, next)) {
+                    if (text[next] == '{') ++depth;
+                    else if (text[next] == '}') --depth;
+                }
+                ++next;
+                if (depth == 0) break;
+            }
+            valid = true;
+        } else if (latin(c)) {
+            while (next < text.size() && latin(text[next])) ++next;
+            const QString word = text.mid(i, next - i);
+            int following = next;
+            while (following < text.size() && text[following] == ' ') ++following;
+            valid = word.size() == 1 || functions.contains(word)
+                || (following < text.size() && QStringLiteral("(_^=<>").contains(text[following]));
+        } else if (c.isDigit() || (c.unicode() >= 0x0370 && c.unicode() <= 0x03ff)
+            || c.category() == QChar::Symbol_Math || c == ' ' || c == '\t'
+            || QStringLiteral("_{}^+-*/=<>!|()[]").contains(c)) {
+            valid = true;
+            if (c == '(' || c == '[') ++parentheses;
+            else if (c == ')' || c == ']') --parentheses;
+        } else if (c == ',' && parentheses > 0) valid = true;
+        else if (c == '.' && i > 0 && next < text.size() && text[i - 1].isDigit() && text[next].isDigit()) valid = true;
+        if (valid) {
+            if (start < 0 && !c.isSpace()) start = i;
+            end = next;
+        } else finish();
+        i = next;
+    }
+    finish();
+    std::sort(result.begin(), result.end(), [](const Span& a, const Span& b) { return a.start < b.start; });
+    return result;
+}
+
+QString sourceError(const QString& source)
+{
+    int depth = 0;
+    for (int i = 0; i < source.size(); ++i) {
+        if (escaped(source, i)) continue;
+        if (source[i] == '{') ++depth;
+        else if (source[i] == '}' && --depth < 0) return QStringLiteral("大括号不匹配");
+    }
+    if (depth != 0) return QStringLiteral("大括号未闭合");
+    if (!source.isEmpty() && QStringLiteral("=+*/^_").contains(source.back()))
+        return QStringLiteral("公式尚未完整");
+    return {};
+}
+
+QString rendererSource(QString source)
+{
+    // Preserve the authored environment in storage/export; adapt only its display wrapper.
+    static const QRegularExpression wrapper(QStringLiteral("\\\\(?:begin|end)\\{(?:equation\\*?|displaymath|math)\\}"));
+    source.remove(wrapper);
+    for (const auto& pair : {qMakePair(QStringLiteral("align"), QStringLiteral("aligned")),
+             qMakePair(QStringLiteral("gather"), QStringLiteral("gathered")),
+             qMakePair(QStringLiteral("multline"), QStringLiteral("gathered"))})
+        for (const QString& tag : {QStringLiteral("begin"), QStringLiteral("end")})
+            for (const QString& star : {QString(), QStringLiteral("*")})
+                source.replace("\\" + tag + "{" + pair.first + star + "}", "\\" + tag + "{" + pair.second + "}");
+    return source;
 }
 
 bool codeAt(const QTextDocument& document, int start, int end)
@@ -74,6 +265,7 @@ bool codeAt(const QTextDocument& document, int start, int end)
             const auto f = it.fragment();
             if (f.position() >= end || f.position() + f.length() <= start) continue;
             if (f.charFormat().isImageFormat() || f.charFormat().fontFixedPitch()
+                || QFontInfo(f.charFormat().font()).fixedPitch()
                 || f.charFormat().fontFamilies().toStringList().contains(QStringLiteral("Consolas"))) return true;
         }
     }
@@ -100,6 +292,45 @@ QCache<QString, MathSupport::Rendered>& cache()
 }
 
 namespace MathSupport {
+ConversionReport convertAllMath(QTextDocument& document, ConversionTarget target)
+{
+    ConversionReport report;
+    report.alreadyFormatted = formulaObjects(document).size();
+    const auto matches = allSpans(document.toPlainText());
+    QList<Span> accepted;
+    for (const auto& match : matches) {
+        if (target == ConversionTarget::RichText && codeAt(document, match.start, match.start + match.length)) continue;
+        QTextCursor first(&document), last(&document);
+        first.setPosition(match.start); last.setPosition(match.start + match.length - 1);
+        QString error = match.error.isEmpty() ? sourceError(match.formula.source) : match.error;
+        if (first.currentFrame() != last.currentFrame()
+            || (first.currentTable() && first.currentTable()->cellAt(first) != first.currentTable()->cellAt(last)))
+            error = QStringLiteral("公式跨越表格单元格，需分别处理");
+        if (error.isEmpty()) error = render(match.formula, Qt::white).error;
+        if (!error.isEmpty()) {
+            ++report.skipped;
+            if (report.errors.size() < 5) report.errors.append(match.formula.source.left(60) + "：" + error);
+        } else if (target == ConversionTarget::MarkdownSource && match.delimited) ++report.alreadyFormatted;
+        else accepted.append(match);
+    }
+    if (accepted.isEmpty()) return report;
+    QTextCursor edit(&document); edit.beginEditBlock();
+    for (auto it = accepted.crbegin(); it != accepted.crend(); ++it) {
+        QTextCursor cursor(&document); cursor.setPosition(it->start);
+        cursor.setPosition(it->start + it->length, QTextCursor::KeepAnchor);
+        if (target == ConversionTarget::MarkdownSource) cursor.insertText(delimited(it->formula));
+        else {
+            QTextImageFormat image; image.merge(cursor.charFormat());
+            image.setName(imageName(it->formula));
+            image.setProperty(QTextFormat::ImageAltText, delimited(it->formula));
+            image.setVerticalAlignment(QTextCharFormat::AlignMiddle);
+            cursor.insertImage(image);
+        }
+        ++report.converted;
+    }
+    edit.endEditBlock();
+    return report;
+}
 void initialize()
 {
     // Adding application fonts invalidates Qt's font engines. Finish registration
@@ -176,6 +407,12 @@ QString normalizeHtml(const QString& html)
         start = -1;
     }
     for (int i = replacements.size() - 1; i >= 0; --i) output.replace(replacements[i].first, lengths[i], replacements[i].second);
+    // Qt can flatten a bare <code> tag into ordinary text under a document font.
+    // Keep its code identity in the rich-text font format, which survives HTML saving.
+    static const QRegularExpression codeOpen(QStringLiteral("<(?:code|pre)\\b[^>]*>"), QRegularExpression::CaseInsensitiveOption);
+    static const QRegularExpression codeClose(QStringLiteral("</(?:code|pre)\\s*>"), QRegularExpression::CaseInsensitiveOption);
+    output.replace(codeOpen, QStringLiteral("\\0<span style=\"font-family:'Consolas';\">"));
+    output.replace(codeClose, QStringLiteral("</span>\\0"));
     return output;
 }
 void renderDelimitedMath(QTextDocument& document)
@@ -255,7 +492,7 @@ Rendered render(const Formula& value, const QColor& color, qreal fontPixels)
         try {
             initialize();
             tex::Formula parsed;
-            tex::TeXParser parser(false, ("$" + value.source + "$").toStdWString(), &parsed);
+            tex::TeXParser parser(false, ("$" + rendererSource(value.source) + "$").toStdWString(), &parsed);
             parser.parse();
             tex::TeXRenderBuilder builder;
             std::unique_ptr<tex::TeXRender> layout(builder.setStyle(value.display ? tex::TexStyle::display : tex::TexStyle::text)

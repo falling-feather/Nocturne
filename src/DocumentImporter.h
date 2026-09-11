@@ -16,6 +16,7 @@ public:
     static void renderDocument(const QString& text, const QString& kind, const QString& directory,
         QString* html, QString* plainText);
     void setRootParents(const QHash<QString,qint64>& parents) { m_rootParents = parents; }
+    void setRefreshMode() { m_registerScanRoots = false; }
     static bool linkRecentProjectDocs(const QString& workspaceRoot, int days,
         QString* report = nullptr);
     int imported = 0;
@@ -30,6 +31,7 @@ private:
     QStringList m_paths;
     qint64 m_parentFolder;
     bool m_linkSources = false;
+    bool m_registerScanRoots = true;
     QString m_rootNameOverride;
     QHash<QString,qint64> m_rootParents;
 };

@@ -420,6 +420,15 @@ void MainWindow::buildUi()
     breadcrumb->setObjectName(QStringLiteral("mutedLabel"));
     headerRow->addWidget(breadcrumb);
     headerRow->addStretch();
+    m_convertMathAction = new QAction(QStringLiteral("转换本文全部 LaTeX"), this);
+    m_convertMathAction->setObjectName(QStringLiteral("convertAllMathAction"));
+    m_convertMathAction->setIconText(QStringLiteral("转换公式"));
+    m_convertMathAction->setToolTip(QStringLiteral("扫描整篇正文，转换公式并保留源码；可一次撤销"));
+    connect(m_convertMathAction, &QAction::triggered, this, &MainWindow::convertCurrentNoteMath);
+    auto* convertMathButton = new QToolButton(documentHeader);
+    convertMathButton->setObjectName(QStringLiteral("convertAllMathButton"));
+    convertMathButton->setDefaultAction(m_convertMathAction);
+    headerRow->addWidget(convertMathButton);
     m_outlineButton = new QToolButton(documentHeader);
     m_outlineButton->setObjectName(QStringLiteral("outlineButton"));
     m_outlineButton->setText(QStringLiteral("大纲")); m_outlineButton->setCheckable(true);
@@ -854,6 +863,7 @@ void MainWindow::buildMenus()
     QAction* imageAction = insertMenu->addAction(QStringLiteral("图片…"));
     insertMenu->addAction(QStringLiteral("表格…"), m_editor, &NoteEditor::showTableDialog);
     insertMenu->addAction(QStringLiteral("LaTeX 公式…"), m_editor, &NoteEditor::showFormulaDialog);
+    insertMenu->addAction(m_convertMathAction);
     insertMenu->addAction(QStringLiteral("选区转为表格"), m_editor, &NoteEditor::showSelectionToTable);
     imageAction->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+I")));
     QAction* stickyAction = insertMenu->addAction(QStringLiteral("新建桌面便签"));
@@ -1066,6 +1076,7 @@ void MainWindow::updateDocumentInfo()
     if (!m_editor || !m_noteMeta) return;
     const bool exists = m_currentNoteId > 0;
     m_outlineButton->setEnabled(exists);
+    m_convertMathAction->setEnabled(exists && m_currentNoteKind != QStringLiteral("sticky"));
     m_outline->setVisible(exists && m_outlineRequested);
     m_wordCountLabel->setText(exists
         ? QStringLiteral("%1 字符").arg(qMax(0, m_editor->document()->characterCount() - 1))
@@ -1910,6 +1921,12 @@ void MainWindow::showNoteContextMenu(const QPoint& position)
         if (id > 0) {
             menu.addSeparator();
             if(!WorkspaceStore(*m_database).linkedFolderPath(id).isEmpty())menu.addAction(QStringLiteral("重新关联目录位置…"),this,&MainWindow::relinkSelectedDirectory);
+            const QString sourcePath = WorkspaceStore(*m_database).linkedFolderPath(id);
+            if (!sourcePath.isEmpty()) {
+                const bool configured = WorkspaceStore(*m_database).refreshRootPaths().contains(sourcePath, Qt::CaseInsensitive);
+                menu.addAction(configured ? QStringLiteral("取消此刷新目录设置") : QStringLiteral("设置为刷新目录…"),
+                    this, &MainWindow::configureSelectedRefreshRoot);
+            }
             menu.addAction(QStringLiteral("重命名目录…"), this, &MainWindow::renameSelectedFolder);
             menu.addAction(QStringLiteral("移动目录…"), this, &MainWindow::moveSelectedFolder);
             menu.addAction(QStringLiteral("删除目录（笔记保留）…"), this, &MainWindow::deleteSelectedFolder);

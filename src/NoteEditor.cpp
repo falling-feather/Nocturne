@@ -574,6 +574,9 @@ void NoteEditor::contextMenuEvent(QContextMenuEvent* event)
     if (hitImage >= 0)
         setTextCursor(imageCursor(hitImage));
     QMenu* menu = createStandardContextMenu();
+    auto* convertMath = menu->addAction(QStringLiteral("转换本文全部 LaTeX"), this, &NoteEditor::convertMathRequested);
+    convertMath->setObjectName(QStringLiteral("convertAllMathContextAction"));
+    convertMath->setEnabled(!document()->isEmpty());
     auto* capture = menu->addAction(QStringLiteral("选段生成便签"),this,&NoteEditor::captureRequested);
     capture->setObjectName(QStringLiteral("captureSelectionAction"));capture->setEnabled(textCursor().hasSelection());
     if (!isReadOnly()) {

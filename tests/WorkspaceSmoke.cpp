@@ -124,6 +124,40 @@ int main(int argc, char** argv)
         check(repeat == linked && skipped && !database.note(linked),
             "refresh never resurrects a removed linked note");
     }
+    check(store.linkedFolderRoots().isEmpty(), "legacy folder mappings do not implicitly authorize recursive scanning");
+    {
+        QTemporaryDir workspace, moved;
+        QDir().mkpath(workspace.filePath("project/docs/section"));
+        QDir().mkpath(workspace.filePath("other"));
+        QDir().mkpath(moved.filePath("docs/section"));
+        const auto root = database.ensureLinkedFolder(workspace.path(), "workspace container", 0, &error);
+        const auto project = database.ensureLinkedFolder(workspace.filePath("project"), "project container", root, &error);
+        const auto docs = database.ensureLinkedFolder(workspace.filePath("project/docs"), "documents", project, &error);
+        const auto section = database.ensureLinkedFolder(workspace.filePath("project/docs/section"), "section", docs, &error);
+        const auto other = database.ensureLinkedFolder(workspace.filePath("other"), "other", root, &error);
+        check(store.setRefreshRoot(workspace.filePath("project/docs"), true, &error), "explicit documentation scan root saves");
+        auto roots = store.linkedFolderRoots(root);
+        check(roots.size() == 1 && roots.first().first == docs, "workspace refresh never promotes its navigation container");
+        roots = store.linkedFolderRoots(project);
+        check(roots.size() == 1 && roots.first().first == docs, "project refresh stays within its declared documentation root");
+        roots = store.linkedFolderRoots(section);
+        check(roots.size() == 1 && roots.first().first == section, "selected subfolder narrows an authorized scan");
+        check(store.linkedFolderRoots(other).isEmpty(), "unrelated folders cannot inherit sibling scanning permission");
+        QDir().mkpath(workspace.filePath("project/doc"));
+        QDir().mkpath(moved.filePath("doc"));
+        const auto shared = database.ensureLinkedFolder(workspace.filePath("project/doc"), "documents", project, &error);
+        check(shared == docs && store.setRefreshRoot(workspace.filePath("project/doc"), true, &error),
+            "legacy doc/docs paths can share one navigation folder while retaining separate scopes");
+        check(store.relinkFolder(project, moved.path(), &error), "project directory can move with declared roots");
+        check(store.refreshRootPaths().contains(moved.filePath("docs")) && store.refreshRootPaths().contains(moved.filePath("doc")), "relinking updates scanning permission in the same transaction");
+        check(store.setRefreshRoot(moved.filePath("docs"), false, &error)
+                && store.setRefreshRoot(moved.filePath("doc"), false, &error) && store.linkedFolderRoots().isEmpty(),
+            "revoking a scan root keeps folder mappings but stops scanning");
+        check(store.setRefreshRoot(moved.filePath("docs"), true, &error) && database.deleteFolder(docs, &error),
+            "deleting a folder revokes its independent scan permission transactionally");
+        database.ensureLinkedFolder(moved.filePath("docs"), "recreated container", project, &error);
+        check(store.linkedFolderRoots().isEmpty(), "recreating a container never revives a deleted scan permission");
+    }
     std::cout << (ok ? "PASS" : "FAIL") << ": workspace history, recovery and safe source writes\n";
     return ok ? 0 : 1;
 }

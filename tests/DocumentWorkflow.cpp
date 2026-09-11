@@ -6,6 +6,7 @@
 #include "NotebookTree.h"
 #include "NocturneStyle.h"
 #include "MathSupport.h"
+#include "WorkspaceStore.h"
 #include "DocumentOutline.h"
 #include "FolderComboBox.h"
 #include <QScrollBar>
@@ -139,6 +140,34 @@ bool runDocumentWorkflowTests(Database& database, MainWindow& window, const QStr
     check(cancelled.wait(15000) && cancelled.imported < 100, "batch cancellation stops the worker");
 
     std::cerr << "WORKFLOW stage: Markdown\n";
+    {
+        QTemporaryDir scope;
+        QDir().mkpath(scope.filePath("project/docs"));
+        QDir().mkpath(scope.filePath("project/data"));
+        auto writeScoped = [&](const QString& path, const QByteArray& text) {
+            QFile file(scope.filePath(path)); check(file.open(QIODevice::WriteOnly), "scope fixture opens");
+            file.write(text);
+        };
+        writeScoped("project/docs/allowed.md", "# permitted");
+        writeScoped("project/data/OUTSIDE_REFRESH.txt", "generated data must remain outside");
+        writeScoped("OUTSIDE_REFRESH_ROOT.md", "workspace file must remain outside");
+        const auto container = database.ensureLinkedFolder(scope.path(), "scope container", 0, &error);
+        const auto project = database.ensureLinkedFolder(scope.filePath("project"), "project", container, &error);
+        DocumentImporter initial({scope.filePath("project/docs")}, project, nullptr, true);
+        initial.runNow();
+        check(initial.errors.isEmpty() && initial.imported == 1, "explicit link registers only the selected docs root");
+        WorkspaceStore store(database);
+        const auto roots = store.linkedFolderRoots(container);
+        check(roots.size() == 1 && roots.first().second == scope.filePath("project/docs"), "container resolves to its docs scan root");
+        writeScoped("project/docs/new.md", "# newly discovered");
+        if (roots.size() == 1) {
+            DocumentImporter refresh({roots.first().second}, project, nullptr, true);
+            refresh.setRefreshMode(); refresh.runNow();
+            check(refresh.errors.isEmpty() && refresh.imported == 1, "refresh discovers a new in-scope document");
+            check(database.listNoteSummaries("OUTSIDE_REFRESH").isEmpty(), "refresh does not import workspace files or generated project data");
+            check(!store.refreshRootPaths().contains(scope.path()), "refresh never grants permission to the parent container");
+        }
+    }
     NoteEditor scratch;
     scratch.insertMarkdownText(QStringLiteral("文字 $\\frac{a_i}{\\sqrt{b}}$ 结束\n\n$$\n\\begin{pmatrix}1 & 2 \\\\ 3 & 4\\end{pmatrix}\n$$"));
     check(scratch.toHtml().contains(QStringLiteral("nocturne-math:")), "LaTeX becomes a rendered object with retained source");
@@ -184,6 +213,71 @@ bool runDocumentWorkflowTests(Database& database, MainWindow& window, const QStr
     check(scratch.document()->blockCount() == mathBlocks, "editing a formula does not insert extra blank paragraphs");
     reopenedMath.setHtml(scratch.toHtml());
     check(reopenedMath.document()->begin().blockFormat().alignment().testFlag(Qt::AlignRight), "reloading formulas preserves authored paragraph alignment");
+    {
+    NoteEditor scratch;
+    scratch.setPlainText(QStringLiteral("说明与公式：\\alpha_i + \\frac{1}{2}。\n\\varphi_i=\\frac{\\pi\\theta_i}{180}\n\\begin{equation}E=mc^2\\end{equation}\n\\begin{align*}x&=1\\\\y&=2\\end{align*}\n$z_i$\n结尾正文"));
+    QTextCursor bulkLayout(scratch.document()); bulkLayout.select(QTextCursor::Document);
+    QTextBlockFormat rightAligned; rightAligned.setAlignment(Qt::AlignRight); bulkLayout.mergeBlockFormat(rightAligned);
+    scratch.document()->clearUndoRedoStacks();
+    const QString beforeBulkMath = scratch.toHtml();
+    const auto bulk = MathSupport::convertAllMath(*scratch.document());
+    if (bulk.converted != 5 || bulk.skipped) std::cerr << "BULK MATH converted=" << bulk.converted << " skipped=" << bulk.skipped << " errors=" << bulk.errors.join("; ").toStdString() << '\n';
+    check(bulk.converted == 5 && bulk.skipped == 0 && scratch.toHtml().count("nocturne-math:") == 5,
+        "whole note converts inline bare TeX, bare equations, environments and delimited math");
+    check(scratch.toPlainText().contains(QStringLiteral("说明与公式：")) && scratch.toPlainText().endsWith(QStringLiteral("结尾正文"))
+            && scratch.document()->begin().blockFormat().alignment().testFlag(Qt::AlignRight),
+        "bulk math preserves surrounding prose and authored alignment");
+    const QString afterBulkMath = scratch.toHtml();
+    scratch.undo(); check(scratch.toHtml() == beforeBulkMath, "whole-note conversion has one exact undo step");
+    scratch.redo(); check(scratch.toHtml() == afterBulkMath, "whole-note conversion redoes exactly");
+    const auto repeatedMath = MathSupport::convertAllMath(*scratch.document());
+    check(repeatedMath.converted == 0 && repeatedMath.alreadyFormatted == 5 && scratch.toHtml() == afterBulkMath,
+        "bulk math is idempotent for existing formula objects");
+    const QString protectedMath = QStringLiteral("`\\alpha_i`\n  ~~~tex\n\\frac{1}{2}\n  ~~~\n```cpp\n$skip$\n```\n    \\theta\n价格 $5 与 $10，路径 C:\\theta\\notes.md\n[文档](https://example.test/\\theta)\n普通标题与文件 x_i.md\n不完整 \\frac{1}{\n$\\unknownNocturneCommand{x}$");
+    scratch.clear(); scratch.setCurrentCharFormat(QTextCharFormat());
+    scratch.setPlainText(protectedMath); scratch.document()->clearUndoRedoStacks();
+    const auto rejectedMath = MathSupport::convertAllMath(*scratch.document());
+    check(rejectedMath.converted == 0 && scratch.toPlainText() == protectedMath && !scratch.document()->isUndoAvailable(),
+        "bulk math preserves code, currency, paths, prose and invalid formulas without empty undo entries");
+    scratch.setHtml("<p><code>\\alpha_i</code></p><p>\\beta_i</p>");
+    const auto richCodeConversion = MathSupport::convertAllMath(*scratch.document());
+    if (richCodeConversion.converted != 1) std::cerr << "CODE MATH count=" << richCodeConversion.converted << " html=" << scratch.toHtml().toStdString() << '\n';
+    check(richCodeConversion.converted == 1,
+        "rich-text code formatting is excluded from bulk conversion");
+    NoteEditor reloadedCode; reloadedCode.setHtml(scratch.toHtml());
+    check(MathSupport::convertAllMath(*reloadedCode.document()).converted == 0,
+        "HTML code exclusion survives saving and reopening");
+    scratch.setHtml("<p><a href=\"nocturne-todo:bulk-fixture\">\\gamma_i</a> 与 <img src=\"unrelated-image.png\" /></p>");
+    check(MathSupport::convertAllMath(*scratch.document()).converted == 1
+            && scratch.toHtml().contains("unrelated-image.png") && scratch.locateTodo("bulk-fixture"),
+        "bulk conversion preserves todo anchors and unrelated images");
+    scratch.clear(); scratch.setCurrentCharFormat(QTextCharFormat());
+    scratch.setPlainText("Let \\alpha_i denote the angle; then \\beta=2.");
+    check(MathSupport::convertAllMath(*scratch.document()).converted == 2
+            && scratch.toPlainText().contains("Let ") && scratch.toPlainText().contains(" denote the angle; then "),
+        "bare inline math excludes surrounding English prose");
+    QTextDocument sourceMath;
+    const QString sourceBefore = "---\ntitle: keep\n---\n\n\\frac{1}{2}\n\n$z_i$\n\n![keep](img/a.png)\n";
+    sourceMath.setPlainText(sourceBefore); sourceMath.clearUndoRedoStacks();
+    const auto normalizedMath = MathSupport::convertAllMath(sourceMath, MathSupport::ConversionTarget::MarkdownSource);
+    check(normalizedMath.converted == 1 && normalizedMath.alreadyFormatted == 1
+            && sourceMath.toPlainText() == "---\ntitle: keep\n---\n\n$$\n\\frac{1}{2}\n$$\n\n$z_i$\n\n![keep](img/a.png)\n",
+        "source conversion inserts only math delimiters and preserves all other Markdown bytes");
+    check(MathSupport::convertAllMath(sourceMath, MathSupport::ConversionTarget::MarkdownSource).converted == 0,
+        "source conversion does not duplicate delimiters");
+    sourceMath.undo(); check(sourceMath.toPlainText() == sourceBefore, "source delimiter changes undo together");
+    sourceMath.setPlainText(QStringLiteral("价格 $5 与 $10，角度 \\theta_i。共享路径 \\\\server\\theta\\notes.md"));
+    const auto mixedCurrency = MathSupport::convertAllMath(sourceMath, MathSupport::ConversionTarget::MarkdownSource);
+    check(mixedCurrency.converted == 1 && sourceMath.toPlainText().contains(QStringLiteral("$5 与 $10"))
+            && sourceMath.toPlainText().endsWith("\\\\server\\theta\\notes.md"), "currency does not hide later math and network paths stay literal");
+    sourceMath.setPlainText("\\theta_i\n\ntext");
+    MathSupport::convertAllMath(sourceMath, MathSupport::ConversionTarget::MarkdownSource);
+    check(sourceMath.toPlainText().startsWith("$$\n\\theta_i\n$$"), "a standalone formula on the first line is a display block");
+    sourceMath.setPlainText("$\\theta_i\n\n\\alpha_i");
+    const auto unclosedMath = MathSupport::convertAllMath(sourceMath, MathSupport::ConversionTarget::MarkdownSource);
+    check(unclosedMath.skipped == 1 && unclosedMath.converted == 1 && !unclosedMath.errors.isEmpty()
+            && sourceMath.toPlainText().startsWith("$\\theta_i\n"), "unclosed delimiters are reported and do not hide later complete formulas");
+    }
     scratch.setHtml("<h1>一级标题</h1><p>正文</p><h3>跳级标题</h3><h2>同名标题</h2><h2>同名标题</h2>");
     DocumentOutline outline(&scratch); outline.resize(220, 400); outline.show(); outline.rebuild(true);
     auto* headingTree = outline.findChild<QTreeWidget*>("headingTree");

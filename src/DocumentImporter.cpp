@@ -1,5 +1,6 @@
 #include "DocumentImporter.h"
 #include "Database.h"
+#include "WorkspaceStore.h"
 #include "BackupManager.h"
 #include "NocturneStyle.h"
 #include "MathSupport.h"
@@ -158,9 +159,9 @@ void DocumentImporter::run()
 {
     Database database; QString error;
     if (!database.open(&error)) { errors.append(error); return; }
-    struct Pending { QString path; qint64 parent; int depth; };
+    struct Pending { QString path; qint64 parent; int depth; QString scope; };
     QList<Pending> pending;
-    for (const auto& path : m_paths) pending.append({path, m_rootParents.value(path,qMax<qint64>(0, m_parentFolder)), 0});
+    for (const auto& path : m_paths) pending.append({path, m_rootParents.value(path,qMax<qint64>(0, m_parentFolder)), 0, QFileInfo(path).canonicalFilePath()});
     QSet<QString> visited;
     const QSet<QString> ignored = {".git", ".svn", "node_modules", ".venv", ".idea", ".vs",
         "vendor", "third_party", "resources", "assets", "images", "attachments",
@@ -169,7 +170,14 @@ void DocumentImporter::run()
         const Pending task = pending.takeLast();
         const QFileInfo info(task.path);
         const QString canonical = info.canonicalFilePath();
-        if (canonical.isEmpty() || info.isSymLink()) { ++skipped; continue; }
+        if (canonical.isEmpty() || info.isSymLink()) {
+            if (task.depth == 0) errors.append(info.fileName() + QStringLiteral("：目录不存在或是符号链接，未刷新。"));
+            ++skipped; continue;
+        }
+        if (canonical.compare(task.scope, Qt::CaseInsensitive) != 0
+            && !canonical.startsWith(task.scope.endsWith('/') ? task.scope : task.scope + '/', Qt::CaseInsensitive)) {
+            errors.append(info.fileName() + QStringLiteral("：已超出指定目录，未导入。")); continue;
+        }
         if (visited.contains(canonical.toCaseFolded())) { ++skipped; continue; }
         visited.insert(canonical.toCaseFolded());
         if (info.isDir()) {
@@ -182,10 +190,14 @@ void DocumentImporter::run()
                 ? database.ensureLinkedFolder(canonical, folderName, task.parent, &error)
                 : database.ensureImportedFolder(canonical, folderName, task.parent, &error);
             if (!folder) { errors.append(info.fileName() + "：" + error); continue; }
+            if (m_linkSources && m_registerScanRoots && task.depth == 0
+                && !WorkspaceStore(database).setRefreshRoot(canonical, true, &error)) {
+                errors.append(error); continue;
+            }
             const auto children = QDir(canonical).entryInfoList(QDir::Files | QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name);
             for (auto it = children.crbegin(); it != children.crend(); ++it) {
                 if (it->isDir() && ignored.contains(it->fileName())) continue;
-                pending.append({it->absoluteFilePath(), folder, task.depth + 1});
+                pending.append({it->absoluteFilePath(), folder, task.depth + 1, task.scope});
             }
             emit progress(imported, skipped, info.fileName());
             continue;

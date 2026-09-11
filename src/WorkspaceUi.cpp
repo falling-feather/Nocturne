@@ -7,6 +7,7 @@
 #include "FolderComboBox.h"
 #include "FindBar.h"
 #include "TextDiff.h"
+#include "MathSupport.h"
 #include "NocturneDialogs.h"
 #include "NocturneStyle.h"
 #include "StickyNoteWindow.h"
@@ -153,12 +154,14 @@ void MainWindow::buildWorkspaceUi()
                 refreshTodos();
         });
     connect(m_editor, &NoteEditor::captureRequested, this, &MainWindow::captureSelection);
+    connect(m_editor, &NoteEditor::convertMathRequested, this, &MainWindow::convertCurrentNoteMath);
     m_sourceEditor->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(m_sourceEditor, &QWidget::customContextMenuRequested, this,
         [this](const QPoint& point)
         {
             auto* menu = m_sourceEditor->createStandardContextMenu();
             menu->addSeparator();
+            menu->addAction(m_convertMathAction);
             auto* capture
                 = menu->addAction(QStringLiteral("选段生成便签"), this, &MainWindow::captureSelection);
             capture->setEnabled(m_sourceEditor->textCursor().hasSelection());
@@ -253,6 +256,52 @@ void MainWindow::toggleSourceView()
     m_bodyStack->setCurrentIndex(preview ? 0 : 1);
     m_sourceToggle->setText(preview ? QStringLiteral("源码") : QStringLiteral("预览"));
     m_findBar->setSourceMode(!preview);
+}
+void MainWindow::convertCurrentNoteMath()
+{
+    if (m_currentNoteId <= 0 || m_currentNoteKind == "sticky") return;
+    resumeHeavyContent();
+    if (!saveCurrentNote()) return;
+    const bool source = m_linkedSource.has_value();
+    const bool previewOnly = source && (m_linkedSource->sourceKind == "html" || m_linkedSource->sourceKind == "htm");
+    if (source && !previewOnly && m_sourceEditor->isReadOnly()) {
+        setStatusMessage(QStringLiteral("源文件暂不可写，请先处理来源栏中的提示。"), true);
+        return;
+    }
+    if (previewOnly) renderSourcePreview();
+    QTextDocument* document = source && !previewOnly ? m_sourceEditor->document() : m_editor->document();
+    const bool wasLoading = m_loadingNote;
+    if (previewOnly) m_loadingNote = true;
+    const auto result = MathSupport::convertAllMath(*document,
+        source && !previewOnly ? MathSupport::ConversionTarget::MarkdownSource : MathSupport::ConversionTarget::RichText);
+    m_loadingNote = wasLoading;
+    if (result.converted && !previewOnly) {
+        QString error;
+        if (!WorkspaceStore(*m_database).capture(m_currentNoteId, QStringLiteral("全文公式转换前"), &error, true)) {
+            document->undo();
+            setStatusMessage(QStringLiteral("未能保留转换前版本，已撤销转换：%1").arg(error), true);
+            return;
+        }
+        scheduleSave();
+        if (!saveCurrentNote()) return;
+    }
+    if (source) {
+        if (!previewOnly) renderSourcePreview();
+        m_bodyStack->setCurrentIndex(0);
+        m_sourceToggle->setText(QStringLiteral("源码"));
+        m_findBar->setSourceMode(false);
+    }
+    m_outline->rebuild();
+    updateDocumentInfo();
+    m_editor->setFocus();
+    QString message = QStringLiteral("已转换 %1 处公式 · 已有 %2 处 · 保留源码 %3 处")
+        .arg(result.converted).arg(result.alreadyFormatted).arg(result.skipped);
+    if (!result.converted && !result.alreadyFormatted && !result.skipped)
+        message = QStringLiteral("本文没有可转换的 LaTeX；代码块和普通文本保持原样。" );
+    if (previewOnly) message += QStringLiteral(" · HTML 仅转换预览，原文件保留");
+    else if (result.converted) message += source ? QStringLiteral(" · 在源码页按 Ctrl+Z 撤销") : QStringLiteral(" · Ctrl+Z 撤销");
+    setStatusMessage(message, result.skipped > 0);
+    if (!result.errors.isEmpty()) m_saveStateLabel->setToolTip(message + "\n" + result.errors.join("\n"));
 }
 bool MainWindow::keepRecoveryDraft(const QString& html, const QString& plainText)
 {
@@ -409,10 +458,11 @@ void MainWindow::refreshLinkedFolders()
     const auto* selected = m_noteList->currentItem();
     const qint64 scope = selected && selected->isFolder() ? selected->data(Qt::UserRole).toLongLong()
                                                           : m_folderFilter->currentData().toLongLong();
-    auto roots = WorkspaceStore(*m_database).linkedFolderRoots(scope);
+    QString scopeError;
+    auto roots = WorkspaceStore(*m_database).linkedFolderRoots(scope, &scopeError);
     if (roots.isEmpty())
     {
-        setStatusMessage(QStringLiteral("所选范围没有对接目录。请先导入或对接文档目录。"));
+        setStatusMessage(scopeError.isEmpty() ? QStringLiteral("尚未指定刷新目录；请在具体文档目录右键选择“设置为刷新目录”。") : scopeError, !scopeError.isEmpty());
         return;
     }
     QHash<qint64, qint64> parents;
@@ -426,6 +476,7 @@ void MainWindow::refreshLinkedFolders()
         rootParents.insert(root.second, parents.value(root.first));
     }
     auto* worker = new DocumentImporter(paths, 0, this, true);
+    worker->setRefreshMode();
     worker->setRootParents(rootParents);
     m_sourceRefresh = worker;
     auto* button = findChild<QToolButton*>("refreshLinkedFoldersButton");
@@ -474,6 +525,22 @@ void MainWindow::relinkSelectedDirectory()
     m_noteCache.clear();
     loadNote(m_currentNoteId);
     setStatusMessage(QStringLiteral("目录路径已重新关联 · %1 个文件引用已更新").arg(count));
+}
+void MainWindow::configureSelectedRefreshRoot()
+{
+    WorkspaceStore store(*m_database);
+    const QString path = store.linkedFolderPath(selectedFolderFilter());
+    if (path.isEmpty()) return;
+    const bool enabled = store.refreshRootPaths().contains(path, Qt::CaseInsensitive);
+    if (!enabled && NocturneDialogs::question(this, QStringLiteral("确认刷新范围"),
+            QStringLiteral("今后刷新会读取以下目录及所有子目录中的 MD、TXT、HTML 文档：\n\n%1\n\n"
+                           "请选择实际存放文档的目录。整个项目目录可能包含大量生成文件。")
+                .arg(QDir::toNativeSeparators(path)), QMessageBox::Yes | QMessageBox::Cancel,
+            QMessageBox::Cancel) != QMessageBox::Yes) return;
+    QString error;
+    if (!store.setRefreshRoot(path, !enabled, &error)) { setStatusMessage(error, true); return; }
+    setStatusMessage(enabled ? QStringLiteral("已取消此目录的独立刷新设置，笔记保留。")
+                             : QStringLiteral("已保存刷新目录；刷新不会自动扩大到上级目录。"));
 }
 void MainWindow::rememberReadingPosition()
 {

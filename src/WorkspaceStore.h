@@ -85,7 +85,9 @@ public:
     bool setCaptureSource(
         qint64 noteId, qint64 sourceNoteId, int position, const QString& text, QString* error = nullptr);
     std::optional<CaptureSource> captureSource(qint64 noteId) const;
-    QList<QPair<qint64, QString>> linkedFolderRoots(qint64 folderId = -1) const;
+    QStringList refreshRootPaths(QString* error = nullptr) const;
+    bool setRefreshRoot(const QString& path, bool enabled, QString* error = nullptr);
+    QList<QPair<qint64, QString>> linkedFolderRoots(qint64 folderId = -1, QString* error = nullptr) const;
     QString linkedFolderPath(qint64 folderId) const;
     bool relinkFolder(
         qint64 folderId, const QString& directory, QString* error = nullptr, int* linkedFiles = nullptr);

@@ -51,6 +51,7 @@ public:
     void drawObject(QPainter*, const QRectF&, QTextDocument*, int, const QTextFormat&) override;
 
 signals:
+    void convertMathRequested();
     void captureRequested();
     void imagePasted(const QImage& image);
     void imageFilesDropped(const QStringList& files);

@@ -69,10 +69,12 @@ private:
     void loadSourceState(qint64 noteId, const NoteRecord& note);
     void toggleSourceView();
     void renderSourcePreview();
+    void convertCurrentNoteMath();
     void compareSource();
     void reloadSource();
     void relinkSource();
     void relinkSelectedDirectory();
+    void configureSelectedRefreshRoot();
     void refreshLinkedFolders();
     void showHistory();
     void showRecovery();
@@ -156,6 +158,7 @@ private:
     void setStatusMessage(const QString& message, bool warning = false);
 
     Database* m_database = nullptr;
+    QAction* m_convertMathAction = nullptr;
     qint64 m_currentNoteId = -1;
     qint64 m_currentFolderId = Database::UnfiledFolder;
     QString m_currentNoteKind = QStringLiteral("note");

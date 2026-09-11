@@ -3,6 +3,7 @@
 #include <QColor>
 #include <QImage>
 #include <QString>
+#include <QStringList>
 #include <QTextDocument>
 
 namespace MathSupport {
@@ -14,6 +15,15 @@ struct Rendered {
     QImage image;
     QString error;
 };
+enum class ConversionTarget { RichText, MarkdownSource };
+struct ConversionReport {
+    int converted = 0;
+    int alreadyFormatted = 0;
+    int skipped = 0;
+    QStringList errors;
+};
+ConversionReport convertAllMath(QTextDocument& document,
+    ConversionTarget target = ConversionTarget::RichText);
 void initialize();
 QString imageName(const Formula& formula);
 bool isFormula(const QString& name);

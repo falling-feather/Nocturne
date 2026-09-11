@@ -68,6 +68,68 @@ bool runWorkspaceUiTests(Database& database, MainWindow& window, const QString& 
         search->setText(title);
         settle(400);
     };
+    std::cerr << "WORKSPACE UI stage: whole-note math conversion\n";
+    const auto mathId = database.createNote(QStringLiteral("全文公式转换回归"),
+        QStringLiteral("<h2>几何关系</h2><p>角度 \\theta_i 与测量方向。</p><p>\\varphi_i=\\frac{\\pi\\theta_i}{180}</p><p>代码与原文可以保留。</p>"),
+        QStringLiteral("几何关系\n角度 \\theta_i 与测量方向。\n\\varphi_i=\\frac{\\pi\\theta_i}{180}\n代码与原文可以保留。"), &error);
+    open(QStringLiteral("全文公式转换回归"));
+    auto* convertMath = window.findChild<QAction*>("convertAllMathAction");
+    auto* convertButton = window.findChild<QToolButton*>("convertAllMathButton");
+    check(convertMath && convertButton && convertButton->isEnabled(), "whole-note math has an enabled header entry");
+    if (convertMath) {
+        const auto otherBefore = database.listNoteSummaries().size();
+        convertMath->trigger();
+        check(database.note(mathId)->html.count("nocturne-math:") == 2 && database.listNoteSummaries().size() == otherBefore,
+            "header conversion saves only current note formulas");
+        bool checkpoint = false;
+        for (const auto& version : store.versions(mathId))
+            if (version.reason == QStringLiteral("全文公式转换前")) checkpoint = !store.version(version.id)->note.html.contains("nocturne-math:");
+        check(checkpoint, "whole-note conversion preserves the original in history");
+        check(window.grab().save(QDir(outputDirectory).filePath("Nocturne-math-bulk.png")), "bulk formula screenshot saves");
+        editor->undo(); settle(1000);
+        check(!database.note(mathId)->html.contains("nocturne-math:"), "whole-note undo persists the original formulas");
+        editor->redo(); settle(1000);
+        check(database.note(mathId)->html.count("nocturne-math:") == 2, "whole-note redo persists the converted formulas");
+    }
+    {
+        QTemporaryDir mathFiles;
+        const QString sourcePath = mathFiles.filePath("formula.md");
+        const QByteArray originalMath = QByteArray::fromHex("efbbbf") + "---\r\nlabel: \\theta\r\n---\r\n\r\n\\frac{1}{2}\r\n\r\n![image](img/a.png)\r\n";
+        QFile mathFile(sourcePath); check(mathFile.open(QIODevice::WriteOnly), "math source fixture opens");
+        mathFile.write(originalMath); mathFile.close();
+        QString html, plain; QByteArray raw;
+        check(DocumentImporter::readDocument(sourcePath, &html, &plain, &raw, &error), "math source renders");
+        const auto baseline = SourceFile::read(sourcePath);
+        bool skipped = false;
+        const auto sourceId = database.linkNote(baseline->path, baseline->hash, "md", QStringLiteral("外部公式转换回归"), html, plain, 0, &skipped, &error, &raw);
+        open(QStringLiteral("外部公式转换回归"));
+        check(convertButton && convertButton->isEnabled(), "source notes retain the header conversion entry");
+        if (convertMath) {
+            convertMath->trigger();
+            const auto saved = SourceFile::read(sourcePath);
+            QByteArray expected = originalMath;
+            expected.replace("\\frac{1}{2}", "$$\r\n\\frac{1}{2}\r\n$$");
+            check(saved && saved->bytes == expected && body->currentIndex() == 0 && editor->toHtml().contains("nocturne-math:"),
+                "source conversion preserves BOM, CRLF, metadata and images, then displays preview");
+            window.findChild<QToolButton*>("sourceToggle")->click(); source->undo(); settle(1000);
+            check(SourceFile::read(sourcePath)->bytes == originalMath && database.linkedSource(sourceId).has_value(),
+                "source conversion undo uses safe writeback and preserves the linked path");
+        }
+        const QString htmlPath = mathFiles.filePath("formula.htm");
+        const QByteArray htmlSource = "<!DOCTYPE html><p>\\gamma_i</p><pre>\\theta_i</pre>";
+        QFile htmlFile(htmlPath); check(htmlFile.open(QIODevice::WriteOnly), "HTML math fixture opens");
+        htmlFile.write(htmlSource); htmlFile.close();
+        check(DocumentImporter::readDocument(htmlPath, &html, &plain, &raw, &error), "HTML math source renders");
+        const auto htmlBaseline = SourceFile::read(htmlPath);
+        database.linkNote(htmlBaseline->path, htmlBaseline->hash, "htm", QStringLiteral("HTML公式预览回归"), html, plain, 0, &skipped, &error, &raw);
+        open(QStringLiteral("HTML公式预览回归"));
+        if (convertMath) {
+            convertMath->trigger();
+            check(SourceFile::read(htmlPath)->bytes == htmlSource && body->currentIndex() == 0
+                    && editor->toHtml().count("nocturne-math:") == 1,
+                "HTML conversion changes preview only and excludes HTML code blocks");
+        }
+    }
     auto modal = [&](const QString& name, const std::function<void()>& launch,
                      const std::function<void(QDialog*)>& inspect)
     {

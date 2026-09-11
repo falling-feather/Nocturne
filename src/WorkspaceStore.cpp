@@ -1,6 +1,7 @@
 #include "WorkspaceStore.h"
 #include <QCryptographicHash>
 #include <QJsonDocument>
+#include <QJsonArray>
 #include <QSqlError>
 #include <QSqlQuery>
 #include <QFileInfo>
@@ -60,6 +61,19 @@ int setting(QSqlDatabase db, const QString& key, int fallback)
     query.prepare("SELECT value FROM settings WHERE key=?");
     query.addBindValue(key);
     return query.exec() && query.next() ? query.value(0).toInt() : fallback;
+}
+bool inside(const QString& path, const QString& root)
+{
+    return !root.isEmpty() && (path.compare(root, Qt::CaseInsensitive) == 0
+        || path.startsWith(root.endsWith('/') ? root : root + '/', Qt::CaseInsensitive));
+}
+bool writeRefreshRoots(QSqlDatabase db, const QStringList& paths, QString* error)
+{
+    QSqlQuery query(db);
+    query.prepare("INSERT INTO settings(key,value) VALUES('linked/refreshRoots',?) "
+                  "ON CONFLICT(key) DO UPDATE SET value=excluded.value");
+    query.addBindValue(QString::fromUtf8(QJsonDocument(QJsonArray::fromStringList(paths)).toJson(QJsonDocument::Compact)));
+    return execute(query, error);
 }
 }
 
@@ -504,33 +518,85 @@ std::optional<CaptureSource> WorkspaceStore::captureSource(qint64 noteId) const
     return CaptureSource { noteId, query.value(0).toLongLong(), query.value(1).toInt(),
         query.value(2).toString() };
 }
-QList<QPair<qint64, QString>> WorkspaceStore::linkedFolderRoots(qint64 folderId) const
+QStringList WorkspaceStore::refreshRootPaths(QString* error) const
 {
-    QHash<qint64, qint64> parents;
-    for (const auto& folder : m_database.listFolders())
-        parents.insert(folder.id, folder.parentId);
+    if (error) error->clear();
     QSqlQuery query(connection());
-    QHash<qint64, QString> linked;
-    if (query.exec("SELECT folder_id,source_path FROM linked_folders"))
-        while (query.next())
-            linked.insert(query.value(0).toLongLong(), query.value(1).toString());
-    QList<QPair<qint64, QString>> result;
-    for (auto it = linked.cbegin(); it != linked.cend(); ++it)
-    {
-        bool inScope = folderId < 0 || it.key() == folderId;
-        bool hasLinkedAncestor = false;
-        QSet<qint64> seen;
-        for (qint64 parent = parents.value(it.key()); parent > 0 && !seen.contains(parent);
-            parent = parents.value(parent))
-        {
-            seen.insert(parent);
-            if (parent == folderId)
-                inScope = true;
-            if (linked.contains(parent) && (folderId < 0 || parent == folderId || !inScope))
-                hasLinkedAncestor = true;
+    query.prepare("SELECT value FROM settings WHERE key='linked/refreshRoots'");
+    if (!execute(query, error) || !query.next()) return {};
+    QJsonParseError parse;
+    const auto json = QJsonDocument::fromJson(query.value(0).toByteArray(), &parse);
+    if (parse.error != QJsonParseError::NoError || !json.isArray()) {
+        errorText(error, QStringLiteral("刷新目录配置无法读取，已停止扫描。")); return {};
+    }
+    QStringList paths;
+    for (const auto& value : json.array()) {
+        const QString path = QDir::cleanPath(value.toString());
+        if (!value.isString() || !QDir::isAbsolutePath(path)) {
+            errorText(error, QStringLiteral("刷新目录配置包含无效路径，已停止扫描。")); return {};
         }
-        if (inScope && !hasLinkedAncestor)
-            result.append({ it.key(), it.value() });
+        if (!paths.contains(path, Qt::CaseInsensitive)) paths.append(path);
+    }
+    return paths;
+}
+
+bool WorkspaceStore::setRefreshRoot(const QString& path, bool enabled, QString* error)
+{
+    QString readError;
+    auto paths = refreshRootPaths(&readError);
+    if (!readError.isEmpty()) { errorText(error, readError); return false; }
+    const QString normalized = QDir::cleanPath(path);
+    if (enabled) {
+        QSqlQuery query(connection());
+        query.prepare("SELECT 1 FROM linked_folders WHERE source_path=?");
+        query.addBindValue(normalized);
+        if (!execute(query, error)) return false;
+        if (!query.next() || !QDir::isAbsolutePath(normalized) || !QFileInfo(normalized).isDir()) {
+            errorText(error, QStringLiteral("请选定已对接且存在的具体文档目录。")); return false;
+        }
+    }
+    paths.removeIf([&](const QString& value) { return value.compare(normalized, Qt::CaseInsensitive) == 0; });
+    if (enabled) paths.append(normalized);
+    std::sort(paths.begin(), paths.end());
+    return writeRefreshRoots(connection(), paths, error);
+}
+
+QList<QPair<qint64, QString>> WorkspaceStore::linkedFolderRoots(qint64 folderId, QString* error) const
+{
+    QString readError;
+    const auto allowed = refreshRootPaths(&readError);
+    if (!readError.isEmpty()) { errorText(error, readError); return {}; }
+    if (allowed.isEmpty()) return {};
+    QHash<qint64, qint64> parents;
+    for (const auto& folder : m_database.listFolders(error)) parents.insert(folder.id, folder.parentId);
+    auto descendant = [&](qint64 child, qint64 ancestor) {
+        if (ancestor < 0) return true;
+        QSet<qint64> seen;
+        for (qint64 id = child; id > 0 && !seen.contains(id); id = parents.value(id)) {
+            if (id == ancestor) return true;
+            seen.insert(id);
+        }
+        return false;
+    };
+    QSqlQuery query(connection());
+    if (!query.exec("SELECT folder_id,source_path FROM linked_folders ORDER BY source_path")) {
+        errorText(error, query.lastError().text()); return {};
+    }
+    QList<QPair<qint64, QString>> candidates, result;
+    while (query.next()) {
+        const qint64 id = query.value(0).toLongLong();
+        const QString path = QDir::cleanPath(query.value(1).toString());
+        if (allowed.contains(path, Qt::CaseInsensitive) && descendant(id, folderId))
+            candidates.append({id, path});
+        else if (id == folderId && std::any_of(allowed.cbegin(), allowed.cend(),
+                     [&](const QString& root) { return inside(path, root); }))
+            candidates.append({id, path});
+    }
+    for (const auto& candidate : candidates) {
+        const bool covered = std::any_of(candidates.cbegin(), candidates.cend(), [&](const auto& other) {
+            return candidate != other && inside(candidate.second, other.second);
+        });
+        if (!covered) result.append(candidate);
     }
     return result;
 }
@@ -605,14 +671,15 @@ bool WorkspaceStore::relinkFolder(qint64 folderId, const QString& directory, QSt
     for (const auto& table : QStringList { "linked_folders", "linked_sources" })
     {
         const auto& mappings = table == "linked_folders" ? folders : notes;
-        const QString key = table == "linked_folders" ? "folder_id" : "note_id";
         QSqlQuery query(database);
-        query.prepare("UPDATE " + table + " SET source_path=? WHERE " + key + "=?");
+        query.prepare("UPDATE " + table + " SET source_path=? WHERE source_path=?");
         for (int phase = 0; phase < 2; ++phase)
-            for (const auto& mapping : mappings)
+            for (int index = 0; index < mappings.size(); ++index)
             {
-                query.bindValue(0, phase == 0 ? temporary + QString::number(mapping.id) : mapping.after);
-                query.bindValue(1, mapping.id);
+                const auto& mapping = mappings[index];
+                const QString staged = temporary + QString::number(index);
+                query.bindValue(0, phase == 0 ? staged : mapping.after);
+                query.bindValue(1, phase == 0 ? mapping.before : staged);
                 if (!execute(query, error))
                 {
                     database.rollback();
@@ -620,6 +687,14 @@ bool WorkspaceStore::relinkFolder(qint64 folderId, const QString& directory, QSt
                 }
             }
     }
+    QString rootsError;
+    auto roots = refreshRootPaths(&rootsError);
+    if (!rootsError.isEmpty()) {
+        errorText(error, rootsError); database.rollback(); return false;
+    }
+    for (auto& path : roots)
+        if (inside(path, previous)) path = QDir::cleanPath(target + path.mid(previous.size()));
+    if (!writeRefreshRoots(database, roots, error)) { database.rollback(); return false; }
     if (!database.commit())
     {
         errorText(error, database.lastError().text());
